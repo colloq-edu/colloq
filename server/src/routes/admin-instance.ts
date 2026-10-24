@@ -81,6 +81,7 @@ import {
   materialCount,
   publicationOf,
 } from '../publish/store.js'
+import { forgetCourseIndex } from './course-view.js'
 import { environmentOf, kernelClasses, kernelMachinesChanged, kernelNote, shutdownSession, syncBookKernels, syncDangerGuard } from '../kernel/index.js'
 import { applyOwnLimits } from '../kernel/pool.js'
 import { applyCpuLimit, applyMemoryLimit, gpuDevices, gpuRefusal, roomContainers, roomGpuDevices } from '../kernel/pool.js'
@@ -1532,6 +1533,10 @@ export function adminInstanceRoutes(): Router {
         // A tombstone stays in the courses: a missing fourth week breaks the
         // course for whoever attended it and shifts the numbering of the rest.
         entombSeminar(row.id, row.name)
+        // The rows the course index holds name a room that is no more, and a
+        // class hidden from its course is found by that room: until the index
+        // is rebuilt, its orphaned page would answer as a public one.
+        forgetCourseIndex()
 
         /*
          * A second pass, over what may have come back to life while the

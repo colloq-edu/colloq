@@ -51,6 +51,7 @@ import type {
   AdminPage,
   Course,
   CourseItem,
+  CourseRowHiddenRequest,
   PublishCheck,
   PickedFile,
   PublishInfo,
@@ -806,6 +807,16 @@ export const adminApi = {
       method: 'PUT',
       ...json({ rev, items }),
     }).then((r) => r.course),
+
+  /**
+   * «Скрыть из курса» / «Показать в курсе» for one class row: only the row's
+   * flag changes, the page stays as it is (routes/courses.ts).
+   */
+  setCourseRowHidden: (courseId: string, rowId: string, hidden: boolean) =>
+    request<{ course: Course }>(
+      `/courses/${encodeURIComponent(courseId)}/rows/${encodeURIComponent(rowId)}/hidden`,
+      { method: 'PUT', ...json({ hidden } satisfies CourseRowHiddenRequest) },
+    ).then((r) => r.course),
 
   /**
    * The name in the address — for a course or a publication.

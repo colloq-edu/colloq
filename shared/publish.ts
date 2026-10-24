@@ -48,6 +48,26 @@ export interface CourseRowFields {
    * into it. Shown only while `day` is null.
    */
   when?: string
+  /**
+   * «Скрыть из курса»: a class put up ahead of its day and kept from the
+   * class until the teacher shows it. Seminar and tombstone rows only.
+   * Nothing is unpublished: students see the row as a plan row, and its page
+   * answers as one that does not exist (routes/course-view.ts · publicRows,
+   * pageHidden). Set and cleared only by its own route, so every change is
+   * in the audit log; the panel's whole-list save keeps the stored value.
+   */
+  hidden?: true
+  /**
+   * The panel's answer only, never stored: the row is not hidden, but its
+   * page is, through another course seating the same room («Скрыто в другом
+   * курсе»), so this course's students see a plan row too.
+   */
+  hiddenElsewhere?: true
+}
+
+/** `PUT /api/admin/courses/:id/rows/:row/hidden`: hide a class from its course, or show it again. */
+export interface CourseRowHiddenRequest {
+  hidden: boolean
 }
 
 /**
@@ -466,6 +486,11 @@ export interface PublicPage {
   /** Empty when withdrawn. */
   materials: PublicMaterial[]
   zip: { name: string; bytes: number } | null
+  /**
+   * Only in the staff's look at a class hidden from its course: students get
+   * «no such page» here until it is shown (routes/courses.ts · visiblePage).
+   */
+  hidden?: true
 }
 
 /** A notebook tab: the PublicCell whitelist below, unchanged. */

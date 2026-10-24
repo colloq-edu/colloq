@@ -270,6 +270,9 @@ export type AdminAuditAction =
   | 'course.deleted'
   | 'course.teacher_added'
   | 'course.teacher_removed'
+  /** «Скрыть из курса» / «Показать в курсе»: a class kept from its course and shown again (routes/courses.ts). */
+  | 'course.class_hidden'
+  | 'course.class_shown'
   | 'publication.published'
   | 'publication.withdrawn'
   | 'publication.restored'
@@ -351,6 +354,8 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'course.deleted',
   'course.teacher_added',
   'course.teacher_removed',
+  'course.class_hidden',
+  'course.class_shown',
   'publication.published',
   'publication.withdrawn',
   'publication.restored',

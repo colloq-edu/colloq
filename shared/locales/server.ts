@@ -1039,6 +1039,22 @@ export const serverMessages: MessageCatalog = {
     "ru": "День занятия — в формате ГГГГ-ММ-ДД",
     "en": "The class day goes in the form YYYY-MM-DD"
   },
+  "server.course.hiddenTitle": {
+    "ru": "Занятие {n}",
+    "en": "Class {n}"
+  },
+  "server.course.hiddenFlag": {
+    "ru": "Нужно указать hidden: true или false",
+    "en": "hidden must be true or false"
+  },
+  "server.course.rowNotFound": {
+    "ru": "В курсе нет такой строки — обновите страницу",
+    "en": "The course has no such row — reload the page"
+  },
+  "server.course.planRowHasNothingToHide": {
+    "ru": "Строку плана скрывать нечего: студенты и так видят только тему и день",
+    "en": "A plan row has nothing to hide: students only see its topic and day"
+  },
   "server.access.allIsOwnerOnly": {
     "ru": "Все занятия и курсы видит только владелец. Вам показаны те, что вы ведёте.",
     "en": "Only an owner sees every class and course. You see the ones you teach."

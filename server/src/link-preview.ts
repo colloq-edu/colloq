@@ -30,7 +30,7 @@ import { CARD_HEIGHT, CARD_WIDTH, type CompetitionCard, type CompetitionsCard, t
 import { shownOnK } from '@shared/competitions'
 import { findCompetition, listCompetitionEntrants } from './competitions/store.js'
 import { findCourse, findPublication, listMaterials } from './publish/store.js'
-import { courseRows, pageContext, pageDay } from './routes/course-view.js'
+import { pageContext, pageDay, pageHidden, publicRows } from './routes/course-view.js'
 import { instanceTimeZone, instanceToday } from './time-zone.js'
 
 /** The common card: an export from Paper (artboard "Превью · colloq.ru"), kept in web/public. */
@@ -143,7 +143,8 @@ export function courseCardOf(
 ): { card: CourseCard; handle: string; description: string } | null {
   const course = findCourse(handle)
   if (!course) return null
-  const classes = courseRows(course).filter((row) => row.n !== null)
+  // A class hidden from the course is a plan row on its card too: its room's name is not its title.
+  const classes = publicRows(course).filter((row) => row.n !== null)
   return {
     handle: course.slug ?? course.id,
     description: course.blurb?.trim() || courseSentence(classes, language),
@@ -192,7 +193,8 @@ export function pageCardOf(
   language: Locale,
 ): { title: string; description: string; course: { card: CourseCard; handle: string } | null } | null {
   const pub = findPublication(handle)
-  if (!pub) return null
+  // A page whose class is hidden from its course is no page, here as on the page itself.
+  if (!pub || pageHidden(pub)) return null
   const { course, row } = pageContext(pub)
   const name = row?.title ?? pub.title
   const title = row?.n != null ? `${String(row.n).padStart(2, '0')} · ${name}` : name

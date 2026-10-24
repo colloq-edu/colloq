@@ -666,7 +666,8 @@
 
   function openAsStudent(item: CourseItem): void {
     if (!course) return
-    const page = pageAddress(item)
+    // A hidden class's page does not exist for a student: what they see is the course.
+    const page = item.kind !== 'planned' && (item.hidden || item.hiddenElsewhere) ? null : pageAddress(item)
     window.open(page ? `/p/${page}` : `/c/${addressOf(course)}`, '_blank', 'noopener')
   }
 
@@ -719,6 +720,26 @@
     }
     busy = false
     await loadOne(course.id)
+  }
+
+  /**
+   * «Скрыть из курса» / «Показать в курсе»: one flag on the row, nothing
+   * unpublished. No confirmation, like «Снять страницу»: it is undone by
+   * the same menu.
+   */
+  async function setHidden(item: CourseItem, hidden: boolean): Promise<void> {
+    if (item.kind === 'planned' || !item.id || busy || !course) return
+    menu = null
+    busy = true
+    errorText = null
+    try {
+      course = await adminApi.setCourseRowHidden(course.id, item.id, hidden)
+    } catch (cause) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => explain(cause)
+    } finally {
+      busy = false
+    }
   }
 
   $effect(() => {
@@ -2003,6 +2024,15 @@
               {/if}
             </div>
             <div class="c-page flex min-w-0 flex-col items-start gap-1">
+              {#if item.kind !== 'planned' && item.hidden}
+                <span class="text-2xs font-semibold text-warning" title={tr('admin.course.hiddenHint')}>
+                  {tr('admin.course.hidden')}
+                </span>
+              {:else if item.kind !== 'planned' && item.hiddenElsewhere}
+                <span class="text-2xs font-semibold text-warning" title={tr('admin.course.hiddenElsewhereHint')}>
+                  {tr('admin.course.hiddenElsewhere')}
+                </span>
+              {/if}
               {#if state === 'page' || state === 'early'}
                 {#if address}
                   <a
@@ -2178,8 +2208,21 @@
                   >
                     {tr('admin.course.menu.asStudent')}
                   </button>
-                  {#if item.kind === 'seminar' && hasPage}
+                  {#if item.kind !== 'planned' && item.id}
                     <div class="admin-menu-sep"></div>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="admin-menu-item"
+                      disabled={busy}
+                      onclick={() => void setHidden(item, !item.hidden)}
+                    >
+                      {tr(item.hidden ? 'admin.course.menu.show' : 'admin.course.menu.hide')}
+                    </button>
+                  {/if}
+                  {#if item.kind === 'seminar' && hasPage}
+                    <!-- One group with «Скрыть из курса» above, when the row has it. -->
+                    {#if !item.id}<div class="admin-menu-sep"></div>{/if}
                     {#if withdrawn}
                       <button role="menuitem" type="button" class="admin-menu-item" disabled={busy} onclick={() => void setShown(item, true)}>
                         {tr('admin.course.menu.restore')}

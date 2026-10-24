@@ -372,7 +372,45 @@ export function rowFieldsOf(item: CourseRowFields): CourseRowFields {
   if (item.day !== undefined) out.day = item.day
   if (item.about !== undefined) out.about = item.about
   if (item.when !== undefined) out.when = item.when
+  // A hidden class stays hidden as a tombstone: deleting its room must not publish its page.
+  if (item.hidden === true) out.hidden = true
   return out
+}
+
+/**
+ * Hide a class row from its course, or show it again («Скрыть из курса»).
+ *
+ * Only the flag changes: the page, its materials and its revision stay as
+ * they are, so showing the row again brings back exactly what was there.
+ * Compare-and-swap with retries, like `rewriteCourseRows`: a teacher saving
+ * the order in the same second must not lose the toggle, nor the toggle the
+ * order. 'missing' is a row id the course does not have; 'plan' a plan row,
+ * which has nothing to hide; 'busy' a course that kept changing under us.
+ */
+export function setCourseRowHidden(
+  courseId: string,
+  rowId: string,
+  hidden: boolean,
+): { course: Course; item: CourseItem; changed: boolean } | 'missing' | 'plan' | 'busy' {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const course = getCourse(courseId)
+    if (!course) return 'missing'
+    const at = course.items.findIndex((item) => item.id === rowId)
+    if (at < 0) return 'missing'
+    const item = course.items[at]
+    if (item.kind === 'planned') return 'plan'
+    if ((item.hidden === true) === hidden) return { course, item, changed: false }
+    const { hidden: _was, ...rest } = item
+    const next: CourseItem = hidden ? { ...rest, hidden: true } : rest
+    const updated = setCourseItems(
+      course.id,
+      course.rev,
+      course.items.map((one, i) => (i === at ? next : one)),
+    )
+    if (updated) return { course: updated, item: next, changed: true }
+  }
+  console.error(`[courses] course ${courseId} kept changing; row ${rowId} was not ${hidden ? 'hidden' : 'shown'}`)
+  return 'busy'
 }
 
 /**

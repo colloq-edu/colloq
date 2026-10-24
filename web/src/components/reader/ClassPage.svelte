@@ -455,6 +455,10 @@
         {label}{#if future && !withdrawn}<span class="text-accent-text"> · {tr('room.page.beforeClass')}</span>{/if}
       </p>
     {/if}
+    {#if page.hidden}
+      <!-- Only the staff ever get here for a hidden class (routes/courses.ts · visiblePage). -->
+      <p class="max-w-[720px] pt-2 text-[14px] font-semibold leading-5 text-warning">{tr('room.page.hiddenPreview')}</p>
+    {/if}
     <h1
       class="max-w-[1040px] pt-3.5 text-[30px] font-black leading-[34px] tracking-[-0.02em] text-ink
              sm:text-marquee lg:pt-[18px] lg:text-[56px] lg:leading-[58px] lg:tracking-[-0.035em]"

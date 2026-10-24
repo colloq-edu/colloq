@@ -259,6 +259,18 @@ test('creating a room and changing who teaches a course or a room are recorded',
   assert.deepEqual([added.target?.id, added.detail?.staff], [courseId, lena.id])
   assert.equal((await call('DELETE', `/api/admin/courses/${courseId}/teachers/${lena.id}`, { cookie: ownerCookie })).status, 200)
   assert.equal(last('course.teacher_removed').detail?.staff, lena.id)
+
+  // «Скрыть из курса» and «Показать в курсе» on the room's row (tests/course-hidden.test.mts has the rest).
+  const seated = await call('PUT', `/api/admin/courses/${courseId}/items`, {
+    cookie: ownerCookie,
+    body: { rev: 0, items: [{ kind: 'seminar', sessionId: room }] },
+  })
+  const { course: { items } } = (await seated.json()) as { course: { items: { id: string }[] } }
+  const row = items[0].id
+  assert.equal((await call('PUT', `/api/admin/courses/${courseId}/rows/${row}/hidden`, { cookie: ownerCookie, body: { hidden: true } })).status, 200)
+  assert.deepEqual(last('course.class_hidden').detail, { row, title: 'Аудит: занятие', room })
+  assert.equal((await call('PUT', `/api/admin/courses/${courseId}/rows/${row}/hidden`, { cookie: ownerCookie, body: { hidden: false } })).status, 200)
+  assert.equal(last('course.class_shown').actor?.id, owner.id)
 })
 
 test("the owner's stop of a class's kernels is recorded with what it freed, and no student in it", async () => {

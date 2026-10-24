@@ -13,6 +13,7 @@
  * two copies.
  */
 import { isClassDay } from '@shared/class-day'
+import { tr } from '@shared/i18n'
 import { readsOnPage } from '@shared/materials'
 import {
   publicationAddress,
@@ -50,42 +51,64 @@ import { instanceToday } from '../time-zone.js'
  */
 export function freshCourseItems(items: CourseItem[]): CourseItem[] {
   return items.map((item): CourseItem => {
-    /*
-     * A tombstone has a link to the remaining reading, but the page may have
-     * been withdrawn after the room was deleted, and then there is nowhere to
-     * lead.
-     */
-    if (item.kind === 'gone') {
-      if (!item.publication) return item
-      const pub = getPublication(item.publication.id)
-      return pub && pub.state === 'published'
-        ? { ...item, publication: { id: pub.id, slug: pub.slug } }
-        : { ...item, publication: null }
-    }
-    if (item.kind !== 'seminar') return item
-    /*
-     * The room may not exist at all: deletion puts up a tombstone, but if the
-     * write of the contents failed at that moment (a race in entombSeminar),
-     * the seminar row stays an orphan. The name is then the one it was
-     * recorded under in the course, and the reading is asked for anyway: it
-     * lives in its own rows and does not need the room.
-     */
-    const session = getSession(item.sessionId)
-    const pub = publicationOf(item.sessionId)
-    return {
-      ...item,
-      name: session?.name ?? item.name,
-      publication:
-        pub && pub.state === 'published'
-          ? {
-              id: pub.id,
-              slug: pub.slug,
-              publishedAt: pub.publishedAt,
-              materials: materialCount(pub.id),
-            }
-          : null,
-    }
+    const fresh = freshItem(item)
+    return elsewhere(item) ? { ...fresh, hiddenElsewhere: true } : fresh
   })
+}
+
+/**
+ * «Скрыто в другом курсе»: a row not hidden itself whose page is, through
+ * another course that seats the same room (pageHidden). Its students see a
+ * plan row here too, and only that course can show it again.
+ */
+function elsewhere(item: CourseItem): boolean {
+  if (item.kind === 'planned' || item.hidden) return false
+  const { hidden } = builtIndex()
+  if (hidden.size === 0) return false
+  if (item.kind === 'seminar') {
+    if (hidden.has(`s:${item.sessionId}`)) return true
+    const pub = publicationOf(item.sessionId)
+    return pub !== null && hidden.has(`p:${pub.id}`)
+  }
+  return item.publication ? hidden.has(`p:${item.publication.id}`) : false
+}
+
+function freshItem(item: CourseItem): CourseItem {
+  /*
+   * A tombstone has a link to the remaining reading, but the page may have
+   * been withdrawn after the room was deleted, and then there is nowhere to
+   * lead.
+   */
+  if (item.kind === 'gone') {
+    if (!item.publication) return item
+    const pub = getPublication(item.publication.id)
+    return pub && pub.state === 'published'
+      ? { ...item, publication: { id: pub.id, slug: pub.slug } }
+      : { ...item, publication: null }
+  }
+  if (item.kind !== 'seminar') return item
+  /*
+   * The room may not exist at all: deletion puts up a tombstone, but if the
+   * write of the contents failed at that moment (a race in entombSeminar),
+   * the seminar row stays an orphan. The name is then the one it was
+   * recorded under in the course, and the reading is asked for anyway: it
+   * lives in its own rows and does not need the room.
+   */
+  const session = getSession(item.sessionId)
+  const pub = publicationOf(item.sessionId)
+  return {
+    ...item,
+    name: session?.name ?? item.name,
+    publication:
+      pub && pub.state === 'published'
+        ? {
+            id: pub.id,
+            slug: pub.slug,
+            publishedAt: pub.publishedAt,
+            materials: materialCount(pub.id),
+          }
+        : null,
+  }
 }
 
 /* ------------------------------------------------------------ the rows */
@@ -103,6 +126,8 @@ export interface CourseRow {
   state: ClassState
   /** The page behind the row, published or withdrawn; `null` when there is none. */
   pub: Publication | null
+  /** «Скрыто из курса»: staff see the row as it is, the public as a plan row (publicRows). */
+  hidden: boolean
 }
 
 /**
@@ -123,6 +148,7 @@ export function courseRows(course: Course): CourseRow[] {
       key: item.id ?? `row-${index + 1}`,
       n: pause ? null : n,
       day: isClassDay(item.day) ? item.day : null,
+      hidden: item.kind !== 'planned' && item.hidden === true,
     }
     if (item.kind === 'planned') {
       return { ...base, title: studentTitle(item), state: pause ? 'pause' : 'plan', pub: null }
@@ -150,6 +176,41 @@ export function courseRows(course: Course): CourseRow[] {
       item.sessionId,
     )
     return { ...base, title, state, pub }
+  })
+}
+
+/**
+ * The rows as anyone outside the staff sees them: a hidden class is a plan
+ * row («Скрыть из курса»).
+ *
+ * Its number and day stay, so the numbering of the rest still matches the
+ * timetable; its title is the row's own (the plan's topic it was seated
+ * into, or one the teacher gave it), else a neutral «Занятие N», never the
+ * room's name, which may give the topic away, or the room's id. No page, no
+ * room: the row is replaced by a plan row, and everything downstream (the
+ * course page, its room door, the neighbours of a class page, the link
+ * cards) treats it as one without knowing it was ever anything else.
+ */
+export function publicRows(course: Course): CourseRow[] {
+  return courseRows(course).map((row): CourseRow => {
+    // A page hidden in another course that seats the same room is hidden here too.
+    const hidden = row.hidden || (row.pub !== null && pageHidden(row.pub))
+    if (!hidden || row.item.kind === 'planned') return row
+    const { item } = row
+    const own = item.title?.trim()
+    const sessionId = item.kind === 'seminar' ? item.sessionId : null
+    const title =
+      (own && (sessionId ? scrubText(own, sessionId) : own)) ||
+      tr('server.course.hiddenTitle', { n: row.n ?? '' })
+    const plan: CourseItem = {
+      kind: 'planned',
+      ...(item.id ? { id: item.id } : {}),
+      name: title,
+      when: item.when ?? '',
+      day: row.day,
+      about: item.about ?? null,
+    }
+    return { ...row, item: plan, title, state: 'plan', pub: null, hidden: false }
   })
 }
 
@@ -186,7 +247,7 @@ export function zipContextOf(
  * open the live notebook for them.
  */
 export function publicCourseView(course: Course): PublicCourseView {
-  const classes = courseRows(course).map((row): PublicClass => {
+  const classes = publicRows(course).map((row): PublicClass => {
     const pub = row.state === 'page' ? row.pub : null
     let page: PublicClass['page'] = null
     if (pub) {
@@ -221,7 +282,12 @@ export function publicCourseView(course: Course): PublicCourseView {
 
 /* ------------------------------------------------------------ the page */
 
-/** Where a page sits in its course, if it sits in one. */
+/**
+ * Where a page sits in its course, if it sits in one: for the public, so a
+ * hidden neighbour is a plan row (publicRows). A hidden page itself gets
+ * here only for its staff (`preview`); to everyone else the public routes
+ * answer for it as for no page (pageHidden).
+ */
 export interface PageContext {
   course: Course | null
   rows: CourseRow[]
@@ -229,9 +295,11 @@ export interface PageContext {
   at: number
 }
 
-export function pageContext(pub: Publication): PageContext {
+export function pageContext(pub: Publication, preview = false): PageContext {
   const course = courseOfPublication(pub)
-  const rows = course ? courseRows(course) : []
+  // The staff's look at a hidden class (routes/courses.ts · visiblePage) sees
+  // the rows as they are, its own included, as students will once it is shown.
+  const rows = course ? (preview ? courseRows(course) : publicRows(course)) : []
   const at = rows.findIndex((row) => row.pub?.id === pub.id)
   return { course, rows, row: at >= 0 ? rows[at] : null, at }
 }
@@ -281,8 +349,8 @@ function publicMaterial(m: MaterialRow): PublicMaterial {
  * A class page as a student reads it: the course row's title, number, day
  * and «о чём», its neighbours, and its materials (none when withdrawn).
  */
-export function publicPageView(pub: Publication): PublicPage {
-  const context = pageContext(pub)
+export function publicPageView(pub: Publication, preview = false): PublicPage {
+  const context = pageContext(pub, preview)
   const { course, row } = context
   const live = pub.state === 'published'
   const materials = live ? listMaterials(pub.id) : []
@@ -306,6 +374,7 @@ export function publicPageView(pub: Publication): PublicPage {
     next: neighborOf(context, 1),
     materials: materials.map(publicMaterial),
     zip: zip ? { name: `${zip.top}.zip`, bytes: zip.bytes } : null,
+    ...(preview ? { hidden: true as const } : {}),
   }
 }
 
@@ -333,16 +402,23 @@ export function publicPageView(pub: Publication): PublicPage {
  */
 const INDEX_TTL_MS = 5_000
 
-let index: { at: number; byHandle: Map<string, Course> } | null = null
+let index: { at: number; byHandle: Map<string, Course>; hidden: Set<string> } | null = null
 
 export function forgetCourseIndex(): void {
   index = null
 }
 
 function courseIndex(): Map<string, Course> {
+  return builtIndex().byHandle
+}
+
+function builtIndex(): NonNullable<typeof index> {
   const now = Date.now()
-  if (index && now - index.at < INDEX_TTL_MS) return index.byHandle
+  if (index && now - index.at < INDEX_TTL_MS) return index
   const byHandle = new Map<string, Course>()
+  // Every handle of a hidden row, in any course: a page shown in one course
+  // and hidden in another stays hidden, since its address is the same.
+  const hidden = new Set<string>()
   // The order is the same as the scan's (`listCourses` puts the newest on
   // top), and so is the first winner: a seminar that ended up in two courses
   // shows the same one of them as before.
@@ -355,11 +431,25 @@ function courseIndex(): Map<string, Course> {
       } else if (item.kind === 'gone' && item.publication) {
         keys.push(`p:${item.publication.id}`)
       }
-      for (const key of keys) if (!byHandle.has(key)) byHandle.set(key, course)
+      for (const key of keys) {
+        if (!byHandle.has(key)) byHandle.set(key, course)
+        if (item.kind !== 'planned' && item.hidden === true) hidden.add(key)
+      }
     }
   }
-  index = { at: now, byHandle }
-  return byHandle
+  index = { at: now, byHandle, hidden }
+  return index
+}
+
+/**
+ * Whether a page hangs off a class hidden from its course («Скрыть из
+ * курса»). The public routes then answer exactly as for a page that does
+ * not exist: not «снята», which would say there is something there.
+ */
+export function pageHidden(pub: Pick<Publication, 'id' | 'sessionId'>): boolean {
+  const { hidden } = builtIndex()
+  if (hidden.size === 0) return false
+  return (pub.sessionId !== null && hidden.has(`s:${pub.sessionId}`)) || hidden.has(`p:${pub.id}`)
 }
 
 /** The course the room belongs to: a hint on the entry screen. */

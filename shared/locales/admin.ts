@@ -6044,6 +6044,14 @@ export const adminMessages: MessageCatalog = {
     "ru": "Убран преподаватель курса",
     "en": "Course teacher removed"
   },
+  "admin.audit.action.course.class_hidden": {
+    "ru": "Занятие скрыто из курса",
+    "en": "Class hidden from the course"
+  },
+  "admin.audit.action.course.class_shown": {
+    "ru": "Занятие снова показано в курсе",
+    "en": "Class shown in the course again"
+  },
   "admin.audit.action.course.created": {
     "ru": "Создан курс",
     "en": "Course created"
@@ -6951,6 +6959,38 @@ export const adminMessages: MessageCatalog = {
   "admin.course.menu.restore": {
     "ru": "Вернуть страницу",
     "en": "Put the page back"
+  },
+  "admin.course.menu.hide": {
+    "ru": "Скрыть из курса",
+    "en": "Hide from the course"
+  },
+  "admin.course.menu.show": {
+    "ru": "Показать в курсе",
+    "en": "Show in the course"
+  },
+  "admin.course.hidden": {
+    "ru": "Скрыто из курса",
+    "en": "Hidden from the course"
+  },
+  "admin.course.hiddenHint": {
+    "ru": "Студенты видят строку плана, страница для них не существует. Преподаватели курса открывают её как обычно",
+    "en": "Students see a plan row, and the page does not exist for them. The course's teachers open it as usual"
+  },
+  "admin.course.hiddenElsewhere": {
+    "ru": "Скрыто в другом курсе",
+    "en": "Hidden in another course"
+  },
+  "admin.course.hiddenElsewhereHint": {
+    "ru": "Эту комнату скрыли в другом курсе, где она тоже стоит: страница закрыта для студентов везде, показать её снова можно только там",
+    "en": "This room was hidden in another course it also sits in: the page is closed to students everywhere, and only that course can show it again"
+  },
+  "admin.seminars.list.row.hidden": {
+    "ru": "· скрыто из курса",
+    "en": "· hidden from the course"
+  },
+  "admin.seminars.list.row.hiddenElsewhere": {
+    "ru": "· скрыто в другом курсе",
+    "en": "· hidden in another course"
   },
   "admin.course.menu.edit": {
     "ru": "Изменить строку…",

@@ -60,6 +60,7 @@ export const roomMessages: MessageCatalog = {
   "room.page.class": {"ru": "Занятие {n}", "en": "Class {n}"},
   "room.page.label": {"ru": "Занятие {n} · {day}", "en": "Class {n} · {day}"},
   "room.page.beforeClass": {"ru": "материалы до занятия", "en": "materials before the class"},
+  "room.page.hiddenPreview": {"ru": "Скрыто из курса: студенты по этой ссылке видят «Такой страницы здесь нет», пока занятие не показано в курсе", "en": "Hidden from the course: students who open this link see “This page does not exist” until the class is shown in the course"},
   "room.page.updated": {"ru": "обновлено {day}", "en": "updated {day}"},
   "room.page.back": {"ru": "К курсу", "en": "To the course"},
   "room.page.materials": {"ru": "Материалы", "en": "Materials"},

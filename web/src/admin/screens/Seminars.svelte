@@ -50,7 +50,7 @@
     type TeacherRef,
     type TeacherWithCourses,
   } from '@shared/admin'
-  import { MAX_COURSE_NAME, type Course } from '@shared/publish'
+  import { MAX_COURSE_NAME, type Course, type CourseItemSeminar } from '@shared/publish'
   import { formatDay } from '@shared/class-day'
   import { colorForId } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
@@ -325,6 +325,39 @@
     } catch (cause: unknown) {
       noteDeadCookie(cause)
       rowError = { id: seminar.id, message: () => (tr("admin.could.not.update.the.publication", { p0: explain(cause) })) }
+    }
+  }
+
+  /**
+   * The course row that seats the class, for «Скрыть из курса»: of the
+   * viewer's courses that have it, the one that hid it, else the first, with
+   * a row id the toggle can name. A room seated in two courses is hidden from
+   * both by either, and only the one that hid it can show it again.
+   */
+  function classRow(seminar: AdminSeminar): { course: Course; row: CourseItemSeminar & { id: string } } | null {
+    let first: { course: Course; row: CourseItemSeminar & { id: string } } | null = null
+    for (const course of courses) {
+      const row = course.items.find(
+        (item): item is CourseItemSeminar => item.kind === 'seminar' && item.sessionId === seminar.id,
+      )
+      if (!row?.id) continue
+      const seat = { course, row: { ...row, id: row.id } }
+      if (row.hidden) return seat
+      first ??= seat
+    }
+    return first
+  }
+
+  /** «Скрыть из курса» / «Показать в курсе», then the list and its courses again. */
+  async function setHidden(seminar: AdminSeminar, hidden: boolean): Promise<void> {
+    const seat = classRow(seminar)
+    if (!seat) return
+    try {
+      await adminApi.setCourseRowHidden(seat.course.id, seat.row.id, hidden)
+      await load(true)
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      rowError = { id: seminar.id, message: () => explain(cause) }
     }
   }
 
@@ -2130,6 +2163,15 @@
               {:else if seminar.publication}
                 <span class="admin-meta whitespace-nowrap">{tr("admin.page.taken.down")}</span>
               {/if}
+              {#if classRow(seminar)?.row.hidden}
+                <span class="admin-meta whitespace-nowrap text-warning" title={tr('admin.course.hiddenHint')}>
+                  {tr('admin.seminars.list.row.hidden')}
+                </span>
+              {:else if classRow(seminar)?.row.hiddenElsewhere}
+                <span class="admin-meta whitespace-nowrap text-warning" title={tr('admin.course.hiddenElsewhereHint')}>
+                  {tr('admin.seminars.list.row.hiddenElsewhere')}
+                </span>
+              {/if}
               <!--
                 A class in no course says so by the group it is drawn under,
                 and offers the way out right on its row: the courses open in
@@ -2419,6 +2461,17 @@
                   >
                     {tr('admin.course.menu.page')}
                   </button>
+                  {#if classRow(seminar)}
+                    {@const hidden = classRow(seminar)?.row.hidden === true}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="admin-menu-item"
+                      onclick={() => void setHidden(seminar, !hidden)}
+                    >
+                      {tr(hidden ? 'admin.course.menu.show' : 'admin.course.menu.hide')}
+                    </button>
+                  {/if}
                   {#if seminar.publication?.state === 'published'}
                     <button
                       role="menuitem"

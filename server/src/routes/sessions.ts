@@ -3,7 +3,7 @@ import { tr } from '@shared/i18n'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { kernelRetirementInProgress } from '../kernel/retirement.js'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
-import { addRoomTeacher, canSeeRoom, staffById, staffGuestFor } from '../admin/access.js'
+import { addRoomTeacher, canSeePublication, canSeeRoom, staffById, staffGuestFor } from '../admin/access.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import {
   HANDOFF_TTL_MS,
@@ -50,7 +50,7 @@ import { broadcast } from '../control.js'
 import { readRules } from '@shared/rules'
 import { normalizeLabel } from '@shared/text'
 import { publicationAddress } from '@shared/publish'
-import { courseOfSeminar } from './course-view.js'
+import { courseOfSeminar, pageHidden } from './course-view.js'
 import { isArchived, setSeminarCreator } from './admin-instance.js'
 import { ENVIRONMENT_NAME, type AdminErrorBody } from '@shared/admin'
 import { SESSION_MISSING } from '@shared/protocol'
@@ -634,6 +634,9 @@ export function sessionRoutes(): Router {
      */
     const pub = publicationOf(session.id)
     const course = pub ? courseOfSeminar(session.id) : null
+    // A class hidden from its course («Скрыть из курса») has no page for a
+    // student; its staff open it (routes/courses.ts · visiblePage).
+    const shown = pub !== null && (!pageHidden(pub) || canSeePublication(currentStaff(req), pub))
     // Whom the sign-in proxy vouched for (sso/identity.ts): the join screen
     // walks in under that name instead of asking for one.
     const identity = ssoIdentityOf(req)
@@ -641,7 +644,7 @@ export function sessionRoutes(): Router {
       ...session,
       viewer: identity?.name ? { name: identity.name.slice(0, MAX_PARTICIPANT_NAME) } : null,
       published:
-        pub && pub.state === 'published'
+        pub && shown && pub.state === 'published'
           ? { address: publicationAddress(pub), materials: materialCount(pub.id) }
           : null,
       course: course ? { id: course.id, name: course.name, slug: course.slug } : null,

@@ -70,13 +70,14 @@ import {
   type CourseRowFields,
 } from '@shared/publish'
 import {
-  courseRows,
   forgetCourseIndex,
   freshCourseItems,
   pageContext,
   pageDay,
+  pageHidden,
   publicCourseView,
   publicPageView,
+  publicRows,
   zipContextOf,
 } from './course-view.js'
 import { SESSION_MISSING } from '@shared/protocol'
@@ -119,6 +120,7 @@ import {
   releaseFormerSlug,
   renameCourse,
   setCourseItems,
+  setCourseRowHidden,
   setCourseSlug,
   setPublicationSlug,
   setPublicationState,
@@ -182,10 +184,19 @@ const PUBLIC_MAX_AGE_S = 300
 /** A page's image: content-addressed, but a takedown has to reach caches (see the blob route). */
 const BLOB_MAX_AGE_S = 3600
 
+/**
+ * A page answer's cache rule: as given, or `private, no-store` when it is the
+ * staff's look at a hidden class (visiblePage), which no cache may keep and
+ * hand to a student.
+ */
+function cacheFor(res: Response, rule: string): void {
+  res.setHeader('cache-control', previewing(res) ? 'private, no-store' : rule)
+}
+
 function fresh(req: Request, res: Response, tag: string): boolean {
   const etag = `W/"${tag}"`
   res.setHeader('etag', etag)
-  res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
+  cacheFor(res, `public, max-age=${PUBLIC_MAX_AGE_S}`)
   if (!holds(req, etag)) return false
   res.status(304).end()
   return true
@@ -203,7 +214,7 @@ function sendTagged(req: Request, res: Response, body: unknown): void {
   const text = JSON.stringify(body)
   const etag = `W/"${createHash('sha1').update(text).digest('base64url')}"`
   res.setHeader('etag', etag)
-  res.setHeader('cache-control', 'no-cache')
+  cacheFor(res, 'no-cache')
   if (holds(req, etag)) {
     res.status(304).end()
     return
@@ -211,9 +222,37 @@ function sendTagged(req: Request, res: Response, body: unknown): void {
   res.type('application/json').send(text)
 }
 
-/** A published page by any of its addresses, or `null` for one gone or withdrawn. */
-function livePage(handle: string): Publication | null {
+/**
+ * A page by any of its addresses, as the caller may know it: `null` for one
+ * that does not exist and for one whose class is hidden from its course
+ * («Скрыть из курса»), which answers exactly as the first, not as withdrawn.
+ *
+ * Except to the staff who may see the page in the panel: a class is put up
+ * the day before precisely so its teacher can look at it before showing it.
+ * That answer depends on the cookie, so it says so (`Vary`) and goes out as
+ * `private, no-store` (cacheFor): no shared cache keeps the staff's look and
+ * hands it to a student, who still gets exactly the not-found.
+ */
+function visiblePage(handle: string, req: Request, res: Response): Publication | null {
   const pub = findPublication(handle)
+  if (!pub) return null
+  if (!pageHidden(pub)) return pub
+  if (!canSeePublication(currentStaff(req), pub)) return null
+  res.locals.hiddenPreview = true
+  res.vary('Cookie')
+  res.setHeader('cache-control', 'private, no-store')
+  return pub
+}
+
+/** Whether this answer is the staff's look at a hidden class (visiblePage). */
+const previewing = (res: Response): boolean => res.locals.hiddenPreview === true
+
+/** An archive of a page under its answer's cache rule (cacheFor). */
+const archiveCache = (res: Response) => (previewing(res) ? { cacheControl: 'private, no-store' } : {})
+
+/** A published page by any of its addresses, or `null` for one gone, hidden or withdrawn. */
+function livePage(handle: string, req: Request, res: Response): Publication | null {
+  const pub = visiblePage(handle, req, res)
   return pub && pub.state === 'published' ? pub : null
 }
 
@@ -274,6 +313,7 @@ function doorTokens(req: Request, res: Response): string[] | null {
  * looked up again after the wait, by its key, on the page as it is then.
  */
 function sendFolder(
+  req: Request,
   res: Response,
   next: NextFunction,
   pub: Publication,
@@ -281,14 +321,14 @@ function sendFolder(
   key: string,
 ): void {
   sendArchive(res, next, pub.id, () => {
-    const now = livePage(handle)
+    const now = livePage(handle, req, res)
     if (!now) return { error: PUBLICATION_NOT_FOUND }
     const folder = listMaterials(now.id).find((m) => m.key === key && m.kind === 'folder')
     if (!folder || (folder.files ?? []).length === 0) return { error: MATERIAL_NOT_FOUND }
-    const day = pageDay(pageContext(now).row, now)
+    const day = pageDay(pageContext(now, previewing(res)).row, now)
     const plan = folderZipPlan(folder, day, { verify: true })
     return plan.entries.length > 0 ? { plan } : { error: MATERIAL_NOT_FOUND }
-  })
+  }, 'pages', archiveCache(res))
 }
 
 /** A material's bytes from the page-file store: a download, or a PDF opened in place. */
@@ -298,14 +338,14 @@ function sendMaterial(
   next: NextFunction,
   how: 'attachment' | 'inline',
 ): void {
-  const pub = livePage(req.params.id)
+  const pub = livePage(req.params.id, req, res)
   if (!pub) {
     res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     return
   }
   const material = listMaterials(pub.id).find((m) => m.key === req.params.key)
   if (material?.kind === 'folder' && how === 'attachment') {
-    sendFolder(res, next, pub, req.params.id, material.key)
+    sendFolder(req, res, next, pub, req.params.id, material.key)
     return
   }
   const info = material && material.kind !== 'folder' ? pageFileInfo(material.hash) : null
@@ -324,7 +364,7 @@ function sendMaterial(
   }
   const etag = `"${material.hash}"`
   res.setHeader('etag', etag)
-  res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
+  cacheFor(res, `public, max-age=${PUBLIC_MAX_AGE_S}`)
   res.setHeader('x-content-type-options', 'nosniff')
   res.setHeader('x-robots-tag', ROBOTS_TAG)
   if (how === 'inline') {
@@ -394,6 +434,17 @@ function rowFields(raw: Record<string, unknown>, known: CourseItem | undefined):
   if (day !== undefined) fields.day = day
   if (about !== undefined) fields.about = about
   if (when) fields.when = when
+  /*
+   * «Скрыто из курса» is the stored row's, whatever the request says: it is
+   * changed only by its own route, which logs who did it, and an older tab
+   * saving the order must neither drop it nor set it. It stays with the same
+   * class only, not with a row id reused for another room.
+   */
+  const sameClass =
+    known !== undefined &&
+    known.kind === raw.kind &&
+    (known.kind !== 'seminar' || known.sessionId === raw.sessionId)
+  if (sameClass && known.kind !== 'planned' && known.hidden === true) fields.hidden = true
   return fields
 }
 
@@ -663,6 +714,49 @@ export function courseRoutes(): Router {
     adoptOrphanedRooms(course.id, left, staff?.id ?? null)
     courseRoomsLeft(course.id, left)
     res.json({ course: { ...updated, items: freshItems(updated.items) } })
+  })
+
+  /**
+   * «Скрыть из курса» / «Показать в курсе»: a class put up ahead of its day
+   * kept from the class, then shown again, with nothing unpublished or
+   * rebuilt (publish/store.ts · setCourseRowHidden). Whoever may edit the
+   * course's rows may do it (courseOr404, as for PUT items), and each change
+   * is in the audit log: hiding is what a later «why did the page vanish»
+   * asks about.
+   */
+  router.put('/api/admin/courses/:id/rows/:row/hidden', requireStaff, (req, res) => {
+    const course = courseOr404(req, res)
+    if (!course) return
+    const hidden = req.body?.hidden
+    if (typeof hidden !== 'boolean') return bad(res, tr('server.course.hiddenFlag'))
+    const outcome = setCourseRowHidden(course.id, req.params.row, hidden)
+    if (outcome === 'missing') return res.status(404).json({ error: tr('server.course.rowNotFound') })
+    if (outcome === 'plan') return bad(res, tr('server.course.planRowHasNothingToHide'))
+    const staff = currentStaff(req)
+    if (outcome === 'busy') {
+      const now = getCourse(course.id)!
+      return res.status(409).json({
+        error: tr("server.thisCourseHasAlreadyBeenChanged.70c236"),
+        course: panelCourse(now, membershipDirectory().courses, staff),
+      })
+    }
+    if (outcome.changed) {
+      // The class pages, their materials and the link cards see it on the next request.
+      forgetCourseIndex()
+      const { item } = outcome
+      recordAdminEvent({
+        actor: staff,
+        action: hidden ? 'course.class_hidden' : 'course.class_shown',
+        target: { type: 'course', id: course.id, label: course.name },
+        detail: {
+          row: req.params.row,
+          title: item.title?.trim() || item.name,
+          ...(item.kind === 'seminar' ? { room: item.sessionId } : {}),
+        },
+        req,
+      })
+    }
+    res.json({ course: panelCourse(outcome.course, membershipDirectory().courses, staff) })
   })
 
   /* -------------------------------------------------- the course's teachers */
@@ -1139,9 +1233,9 @@ export function courseRoutes(): Router {
    * it never existed.
    */
   router.get('/api/p/:id', (req, res) => {
-    const pub = findPublication(req.params.id)
+    const pub = visiblePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
-    sendTagged(req, res, { page: publicPageView(pub) })
+    sendTagged(req, res, { page: publicPageView(pub, previewing(res)) })
   })
 
   /**
@@ -1154,7 +1248,7 @@ export function courseRoutes(): Router {
   router.post('/api/p/:id/room', (req, res) => {
     const tokens = doorTokens(req, res)
     if (!tokens) return
-    const pub = findPublication(req.params.id)
+    const pub = visiblePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     const sessionId = pub.state === 'published' ? pub.sessionId : null
     res.json(roomDoor(req, sessionId, pub.selection?.roomAccess, tokens))
@@ -1166,7 +1260,8 @@ export function courseRoutes(): Router {
    * when there is one, sets the access; a row without a page has the
    * default, 'anyone' (publish/room-door.ts · roomDoor).
    * A withdrawn page closes the row's door too: the teacher took the class
-   * back, and the course must not reopen it.
+   * back, and the course must not reopen it. A hidden class is a plan row
+   * here (publicRows), and a plan row has no room.
    */
   router.post('/api/c/:id/room', (req, res) => {
     const tokens = doorTokens(req, res)
@@ -1174,7 +1269,7 @@ export function courseRoutes(): Router {
     const course = findCourse(req.params.id)
     if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     const key = typeof req.body?.key === 'string' ? req.body.key : ''
-    const row = key ? courseRows(course).find((r) => r.key === key) : undefined
+    const row = key ? publicRows(course).find((r) => r.key === key) : undefined
     if (!row) return res.status(404).json({ error: tr("server.notFound.094b76") })
     const withdrawn = row.pub !== null && row.pub.state !== 'published'
     const sessionId = row.item.kind === 'seminar' && !withdrawn ? row.item.sessionId : null
@@ -1187,7 +1282,7 @@ export function courseRoutes(): Router {
    * `materials_rev` is the same, it is byte for byte the same text.
    */
   router.get('/api/p/:id/m/:key', (req, res) => {
-    const pub = livePage(req.params.id)
+    const pub = livePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     const key = req.params.key
     if (!MATERIAL_KEY_RE.test(key) || !hasNotebook(pub.id, key)) {
@@ -1229,23 +1324,23 @@ export function courseRoutes(): Router {
    * download cannot keep a slot from the class.
    */
   router.get('/api/p/:id/zip', (req, res, next) => {
-    const pub = livePage(req.params.id)
+    const pub = livePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     if (listMaterials(pub.id).length === 0) {
       return res.status(404).json({ error: MATERIAL_NOT_FOUND })
     }
     sendArchive(res, next, pub.id, () => {
-      const now = livePage(req.params.id)
+      const now = livePage(req.params.id, req, res)
       const materials = now ? listMaterials(now.id) : []
       if (!now || materials.length === 0) {
         return { error: now ? MATERIAL_NOT_FOUND : PUBLICATION_NOT_FOUND }
       }
-      const context = pageContext(now)
+      const context = pageContext(now, previewing(res))
       const plan = zipPlan(zipContextOf(now, materials, context.course, context.row), {
         verify: true,
       })
       return { plan }
-    })
+    }, 'pages', archiveCache(res))
   })
 
   /*
@@ -1255,7 +1350,7 @@ export function courseRoutes(): Router {
    * page, and the reader goes there.
    */
   router.get('/api/p/:id/notebook.ipynb', (req, res) => {
-    const pub = livePage(req.params.id)
+    const pub = livePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     const first = listMaterials(pub.id).find((m) => m.kind === 'notebook')
     if (!first) return res.status(404).json({ error: MATERIAL_NOT_FOUND })
@@ -1264,7 +1359,7 @@ export function courseRoutes(): Router {
   })
 
   router.get('/api/p/:id/step/:seq', (req, res) => {
-    const pub = findPublication(req.params.id)
+    const pub = visiblePage(req.params.id, req, res)
     if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     res.status(410).json({ error: STEPS_GONE, address: publicationAddress(pub) })
   })
@@ -1288,15 +1383,15 @@ export function courseRoutes(): Router {
    * anyway.
    */
   router.get('/api/p/:id/blob/:hash', (req, res) => {
-    const pub = findPublication(req.params.id)
-    if (!pub || pub.state !== 'published') return res.status(404).end()
+    const pub = livePage(req.params.id, req, res)
+    if (!pub) return res.status(404).end()
     const blob = readBlob(pub.id, req.params.hash)
     if (!blob) return res.status(404).end()
     res.setHeader('content-security-policy', "sandbox; default-src 'none'")
     res.setHeader('x-content-type-options', 'nosniff')
     const etag = `"${req.params.hash}"`
     res.setHeader('etag', etag)
-    res.setHeader('cache-control', `public, max-age=${BLOB_MAX_AGE_S}`)
+    cacheFor(res, `public, max-age=${BLOB_MAX_AGE_S}`)
     if (holds(req, etag)) return res.status(304).end()
     /*
      * A note's SVG keeps its type, so an `<img>` on the page draws it, and is
