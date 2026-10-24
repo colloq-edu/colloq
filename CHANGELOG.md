@@ -13,6 +13,14 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.29.0](https://github.com/colloq-edu/colloq/compare/v0.28.1...v0.29.0) (2026-10-24)
+
+
+### Features
+
+* **competitions:** take an open competition off publication and put it back ([0f03305](https://github.com/colloq-edu/colloq/commit/0f03305af2dc2e07d000424632d5eac09f678ea1))
+* **courses:** hide a class from its course until it is shown ([8f308ec](https://github.com/colloq-edu/colloq/commit/8f308ecb51baf6f91f3dc3188008b75a032a63ff))
+
 ## [0.28.1](https://github.com/colloq-edu/colloq/compare/v0.28.0...v0.28.1) (2026-10-23)
 
 
