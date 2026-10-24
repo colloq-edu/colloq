@@ -3,7 +3,7 @@ import { currentStaff, requireStaff } from '../admin/auth.js'
 import { canSeeCompetition } from '../competitions/scope.js'
 import { requireEntrant, type EntrantRequest } from '../competitions/identity.js'
 import { findCompetition, getCompetition } from '../competitions/store.js'
-import { acceptsUploads, submissionsOpen, type Competition } from '@shared/competitions'
+import { acceptsUploads, shownOnK, submissionsOpen, type Competition } from '@shared/competitions'
 import { dependencyActive } from '@shared/dependencies'
 import * as service from './service.js'
 import * as store from './store.js'
@@ -20,7 +20,8 @@ const endpoint=(fn:Handler)=>(req:Request,res:Response):void=>{void Promise.reso
 })}
 function visible(req:Request):Competition{
  const c=findCompetition(String(req.params.slug))
- if(!c||c.state==='draft')throw new store.DependencyStoreError('dependency_owner',404)
+ // A draft and a competition taken off /k alike (@shared/competitions · shownOnK).
+ if(!c||!shownOnK(c))throw new store.DependencyStoreError('dependency_owner',404)
  return c
 }
 // The panel's second lookup of a competition: it must ask the same scope

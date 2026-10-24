@@ -80,6 +80,7 @@ import {
   renameEntrant,
   rotateEntrantKey,
   runningRows,
+  setCompetitionHidden,
   setCompetitionState,
   setEntrantDisabled,
   updateCompetition,
@@ -1832,6 +1833,41 @@ export function adminCompetitionRoutes(): Router {
       res.json(await viewOf(getCompetition(competition.id)!))
     },
   )
+
+  /**
+   * «Снять с публикации» and «Опубликовать снова»: an open or finished
+   * competition taken off /k and put back.
+   *
+   * The same staff rule as opening it (requireStaff, then the scope check in
+   * `competitionOf`), not the owner's «Завершить сейчас»: this ends nothing.
+   * Only the mark moves (store · setCompetitionHidden) — the state, dates,
+   * files, entrants, submissions and scores stay as they are, and runs already
+   * queued or running finish and are scored as usual. A draft has nothing to
+   * take off: it was never on /k. Pressing either twice changes nothing and
+   * writes no second line in the audit log.
+   */
+  router.post('/api/admin/competitions/:id/unpublish', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    if (competition.state === 'draft') {
+      return fail(res, 409, 'invalid', tr('competitions.refusal.unpublishDraft'))
+    }
+    if (!competition.hiddenAt) {
+      setCompetitionHidden(competition.id, Date.now())
+      recordAdminEvent({ actor: currentStaff(req), action: 'competition.unpublished', target: { type: 'competition', id: competition.id, label: competition.title }, req })
+    }
+    res.json(await viewOf(getCompetition(competition.id)!))
+  })
+
+  router.post('/api/admin/competitions/:id/republish', requireStaff, async (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    if (competition.hiddenAt) {
+      setCompetitionHidden(competition.id, null)
+      recordAdminEvent({ actor: currentStaff(req), action: 'competition.republished', target: { type: 'competition', id: competition.id, label: competition.title }, req })
+    }
+    res.json(await viewOf(getCompetition(competition.id)!))
+  })
 
   /** Open the private leaderboard by hand: "I will open it manually, at the review". */
   router.post('/api/admin/competitions/:id/private-board', requireStaff, async (req, res) => {

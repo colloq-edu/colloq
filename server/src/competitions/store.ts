@@ -544,6 +544,15 @@ ensureColumn('competitions', 'course_id', 'course_id TEXT')
  * competition an owner later scoped must not be shared again on a restart.
  */
 ensureColumn('competitions', 'staff_shared_at', 'staff_shared_at INTEGER')
+/*
+ * «Снять с публикации» (Competition.hiddenAt): when staff took an open or
+ * finished competition off /k, or null — shown. A moment rather than a flag,
+ * like private_opened_at: "hidden since 14:20" is what the console says.
+ * Null for every existing row: nothing disappears by itself on an update. A
+ * new nullable column, so no schema bump (data-schema.ts): an older server
+ * never reads it, and would simply show a hidden competition again.
+ */
+ensureColumn('competitions', 'hidden_at', 'hidden_at INTEGER')
 const SHARED_MARKER = 'access.competitionsShared'
 if (!settingRows('access.').has(SHARED_MARKER)) {
   const now = Date.now()
@@ -821,6 +830,7 @@ interface CompetitionRow {
   notebook_input_revision: number
   created_by: string | null
   course_id: string | null
+  hidden_at: number | null
   created_at: number
   updated_at: number
 }
@@ -863,6 +873,7 @@ function toCompetition(row: CompetitionRow): Competition {
     notebookInputRevision: row.notebook_input_revision,
     createdBy: row.created_by,
     courseId: row.course_id ?? null,
+    hiddenAt: row.hidden_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -1142,6 +1153,21 @@ const openPrivate = db.prepare(
 
 export function setCompetitionState(id: string, state: CompetitionState, at = Date.now()): boolean {
   return updateState.run(state, at, id).changes > 0
+}
+
+const updateHidden = db.prepare('UPDATE competitions SET hidden_at = ? WHERE id = ?')
+
+/**
+ * «Снять с публикации» (a moment) and «Опубликовать снова» (null).
+ *
+ * Only the mark: the state, the dates, the files, the entrants, the
+ * submissions and their scores are not touched, so publishing again brings
+ * back exactly what was there. Nor is `updated_at` — nothing about the
+ * competition itself was edited. The revision moves by itself
+ * (competition_changed), so the console's feed hears of it.
+ */
+export function setCompetitionHidden(id: string, hiddenAt: number | null): boolean {
+  return updateHidden.run(hiddenAt, id).changes > 0
 }
 
 /**

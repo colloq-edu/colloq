@@ -68,6 +68,7 @@
     deadlineDividerAt,
     etaWords,
     feedWhen,
+    hiddenNote,
     lastResultWords,
     lateQuery,
     limitNote,
@@ -163,6 +164,8 @@
   let openMenu = $state<string | null>(null)
   let copied = $state<string | null>(null)
   let finishing = $state(false)
+  /** The «Снять с публикации» confirmation is open. */
+  let unpublishing = $state(false)
   let now = $state(Date.now())
 
   /** How many feed rows are fetched at a time and how many in total. */
@@ -358,6 +361,25 @@
       onview(fresh)
       finishing = false
     }
+  }
+
+  /*
+   * «Снять с публикации» asks first (the dialog says what happens);
+   * «Опубликовать снова» does not: it only puts back what was there.
+   */
+  async function unpublish(): Promise<void> {
+    const id = c.id
+    const fresh = await act(() => adminApi.unpublishCompetition(id))
+    if (fresh) {
+      onview(fresh)
+      unpublishing = false
+    }
+  }
+
+  async function republish(): Promise<void> {
+    const id = c.id
+    const fresh = await act(() => adminApi.republishCompetition(id))
+    if (fresh) onview(fresh)
   }
 
   async function toggleLate(): Promise<void> {
@@ -866,6 +888,13 @@
   {#snippet lede()}
     <div class="flex min-w-0 basis-full flex-wrap items-center gap-x-2.5 gap-y-1.5">
       <Badge word={phaseWord(phase)} tone={phaseTone(phase)} />
+      {#if c.hiddenAt}
+        <!-- Taken off /k: beside the phase, which it does not change; since
+             when, on hover. The state line still ends with the status note. -->
+        <span class="inline-flex" title={hiddenNote(c, now)}>
+          <Badge word={tr('admin.competitions.hiddenBadge')} tone="warning" form="outline" />
+        </span>
+      {/if}
       {#if accepting === 'late'}
         <!-- Intake is over for the standings, not for uploads: said in the
              header, since the feed keeps moving after the deadline. -->
@@ -910,6 +939,17 @@
       <Icon name="download" size={14} />
       <span class="max-[640px]:hidden">{tr('admin.competitions.materials.button')}</span>
     </a>
+    <!-- Off /k and back, for whoever runs the competition: hidden, it keeps
+         everything, so the way back sits where the way out was. -->
+    {#if c.hiddenAt}
+      <button type="button" class="btn-primary" disabled={busy} onclick={() => void republish()}>
+        {tr('admin.competitions.republish')}
+      </button>
+    {:else}
+      <button type="button" class="btn-outline" disabled={busy} onclick={() => (unpublishing = true)}>
+        {tr('admin.competitions.unpublish')}
+      </button>
+    {/if}
     {#if phase !== 'over' && c.state === 'live' && adminAuth.isOwner}
       <button
         type="button"
@@ -1948,6 +1988,33 @@
         </button>
         <button type="button" class="btn-danger-solid" disabled={busy} onclick={() => void confirmRemove()}>
           {tr('competitions.entrant.delete')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if unpublishing}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="unpublish-competition-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[460px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="unpublish-competition-title" class="text-title font-semibold text-ink">
+        {tr('admin.competitions.unpublishHeading', { name: c.title })}
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">{tr('admin.competitions.unpublishBody')}</p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger" role="alert">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (unpublishing = false)}>
+          {tr('admin.cancel')}
+        </button>
+        <button type="button" class="btn-primary" disabled={busy} onclick={() => void unpublish()}>
+          {tr('admin.competitions.unpublish')}
         </button>
       </div>
     </div>

@@ -250,7 +250,8 @@
   async function loadPage(slug: string): Promise<void> {
     const context = requestContext()
     try {
-      const fresh = await entrantApi.competition(slug)
+      // The projector's read, as the board's below: staff still put a hidden competition on the screen.
+      const fresh = await entrantApi.competition(slug, route.view === 'screen' ? 'class' : 'me')
       if (!currentContext(context)) return
       page = fresh
       failure = null

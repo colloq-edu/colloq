@@ -27,6 +27,7 @@ import { getSession } from './db.js'
 import type { SessionInfo } from '@shared/protocol'
 import type { PageExtras } from './frontend-html.js'
 import { CARD_HEIGHT, CARD_WIDTH, type CompetitionCard, type CompetitionsCard, type CourseCard } from './og-card.js'
+import { shownOnK } from '@shared/competitions'
 import { findCompetition, listCompetitionEntrants } from './competitions/store.js'
 import { findCourse, findPublication, listMaterials } from './publish/store.js'
 import { courseRows, pageContext, pageDay } from './routes/course-view.js'
@@ -108,7 +109,8 @@ function cardVersion(card: object): string {
  */
 export function competitionCardOf(slug: string, language: Locale, now = Date.now()): { card: CompetitionCard; slug: string } | null {
   const competition = findCompetition(slug)
-  if (!competition || competition.state === 'draft') return null
+  // A draft and one taken off by «Снять с публикации» alike (@shared/competitions · shownOnK).
+  if (!competition || !shownOnK(competition)) return null
   const over = competition.state === 'finished' || (competition.deadlineAt !== null && competition.deadlineAt <= now)
   const phase = over ? 'finished' : competition.startsAt !== null && competition.startsAt > now ? 'upcoming' : 'live'
   return {

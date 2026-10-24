@@ -96,8 +96,12 @@ export const entrantApi = {
   /* -------------------------------------------------------- competitions */
 
   list: () => request<EntrantCompetitionList>('/competitions'),
-  competition: (slug: string) =>
-    request<EntrantCompetitionView>(`/competitions/${encodeURIComponent(slug)}`),
+  /**
+   * `class` is the projector's, as on the leaderboard: the one read of the
+   * page that still opens a competition taken off /k, for the staff who run it.
+   */
+  competition: (slug: string, audience: 'me' | 'class' = 'me') =>
+    request<EntrantCompetitionView>(`/competitions/${encodeURIComponent(slug)}${audience === 'class' ? '?audience=class' : ''}`),
   join: (slug: string, name: string) =>
     request<EntrantMe>(`/competitions/${encodeURIComponent(slug)}/join`, json({ name })),
   /**

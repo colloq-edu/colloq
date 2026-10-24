@@ -280,6 +280,9 @@ export type AdminAuditAction =
   | 'competition.deleted'
   | 'competition.opened'
   | 'competition.closed'
+  /** «Снять с публикации» / «Опубликовать снова»: taken off /k and put back (routes/admin-competitions.ts). */
+  | 'competition.unpublished'
+  | 'competition.republished'
   | 'competition.entrant_deleted'
   /**
    * A competition's hidden test left the server for a teacher, with `files`
@@ -358,6 +361,8 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'competition.deleted',
   'competition.opened',
   'competition.closed',
+  'competition.unpublished',
+  'competition.republished',
   'competition.entrant_deleted',
   'competition.hidden_test_downloaded',
   'environment.created',

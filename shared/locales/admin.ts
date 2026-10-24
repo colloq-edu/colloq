@@ -3671,6 +3671,30 @@ export const adminMessages: MessageCatalog = {
     "ru": "Приём посылок закроется у всего класса. Приватный лидерборд останется закрытым, пока вы не откроете его сами.",
     "en": "Submissions close for the whole class. The private leaderboard stays closed until you open it yourself."
   },
+  "admin.competitions.unpublish": {
+    "ru": "Снять с публикации",
+    "en": "Unpublish"
+  },
+  "admin.competitions.republish": {
+    "ru": "Опубликовать снова",
+    "en": "Publish again"
+  },
+  "admin.competitions.hiddenBadge": {
+    "ru": "Скрыто",
+    "en": "Hidden"
+  },
+  "admin.competitions.hiddenSince": {
+    "ru": "Скрыто от участников: {when}",
+    "en": "Hidden from participants: {when}"
+  },
+  "admin.competitions.unpublishHeading": {
+    "ru": "Снять «{name}» с публикации?",
+    "en": "Unpublish “{name}”?"
+  },
+  "admin.competitions.unpublishBody": {
+    "ru": "Соревнование пропадёт из списка, а по ссылке участники увидят «Такого соревнования нет». Новые посылки не принимаются. Посылки, которые уже в очереди или проверяются, досчитаются как обычно. Задание, файлы, участники, посылки и лидерборд сохранятся: «Опубликовать снова» вернёт всё как было.",
+    "en": "The competition disappears from the list, and its link tells participants “No such competition.” New submissions are not accepted. Submissions already queued or being checked finish and are scored as usual. The task, files, participants, submissions and leaderboard are all kept: “Publish again” brings everything back as it was."
+  },
   "admin.competitions.openPrivate": {
     "ru": "Открыть приватный лидерборд",
     "en": "Open the private leaderboard"
@@ -6067,6 +6091,14 @@ export const adminMessages: MessageCatalog = {
   "admin.audit.action.competition.closed": {
     "ru": "Соревнование завершено",
     "en": "Competition closed"
+  },
+  "admin.audit.action.competition.unpublished": {
+    "ru": "Соревнование снято с публикации",
+    "en": "Competition unpublished"
+  },
+  "admin.audit.action.competition.republished": {
+    "ru": "Соревнование опубликовано снова",
+    "en": "Competition published again"
   },
   "admin.audit.action.competition.entrant_deleted": {
     "ru": "Удалён участник соревнования",

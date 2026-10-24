@@ -558,6 +558,10 @@
 
               <div class="comp-cell w-[196px] shrink-0">
                 <Badge word={phaseWord(phase)} tone={phaseTone(phase)} />
+                {#if c.hiddenAt}
+                  <!-- «Снять с публикации»: beside the phase, which it does not change. -->
+                  <Badge word={tr('admin.competitions.hiddenBadge')} tone="warning" form="outline" class="ml-1.5" />
+                {/if}
                 {#if late}
                   <!-- Intake for the standings is over, the door is not: said
                        in the row, since nothing else in it moves any more. -->

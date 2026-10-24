@@ -383,6 +383,10 @@ export const competitionsMessages: MessageCatalog = {
     ru: 'Соревнование уже открыто.',
     en: 'The competition is already open.',
   },
+  'competitions.refusal.unpublishDraft': {
+    ru: 'Черновик и так не опубликован: участники его не видят.',
+    en: 'A draft is not published anyway: participants cannot see it.',
+  },
   'competitions.refusal.notLive': {
     ru: 'Завершать нечего: соревнование не идёт.',
     en: 'Nothing to finish: the competition is not running.',

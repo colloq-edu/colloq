@@ -564,6 +564,14 @@ export const adminApi = {
   finishCompetition: (id: string) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/finish`, { method: 'POST' }),
 
+  /** «Снять с публикации»: off /k for the class, everything kept. Not for a draft. */
+  unpublishCompetition: (id: string) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/unpublish`, { method: 'POST' }),
+
+  /** «Опубликовать снова»: back on /k exactly as it was. */
+  republishCompetition: (id: string) =>
+    request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/republish`, { method: 'POST' }),
+
   /** "I will open it by hand — at the review". */
   openPrivateBoard: (id: string) =>
     request<CompetitionView>(`/competitions/${encodeURIComponent(id)}/private-board`, {

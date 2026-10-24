@@ -122,6 +122,7 @@ import {
   placesAmongPeople,
   placesByScore,
   publicCompetition,
+  shownOnK,
   submissionsOpen,
   type Competition,
   type CompetitionErrorBody,
@@ -199,12 +200,27 @@ const MAX_UPLOADS_PER_ADDRESS = 300
  *
  * A draft does not exist on `/k` at all: it has no data and no verified
  * baseline yet, but it already has an address, and opened early it would
- * hand the class a task the teacher is still writing.
+ * hand the class a task the teacher is still writing. Neither does one taken
+ * off by «Снять с публикации» (@shared/competitions · shownOnK): every door
+ * answers it with the same 404 and the same words as a missing one.
+ *
+ * `projector` — the request of a read the projector makes (the page and the
+ * board under `?audience=class`, «Лидерборд на экран» opened from the
+ * panel): staff who run THIS competition (competitions/scope.ts) still read a
+ * hidden one there, and only there. Without the marker the staff cookie opens
+ * nothing: the console's «открыть» beside the address shows the teacher just
+ * what a student gets — «Такого соревнования нет», not the task, the files
+ * and a join panel that would make the unpublish look as if it had failed.
+ * Never given on a door that writes, needs an entrant or hands out the task's
+ * files: a hidden competition takes no one in and gives nothing out.
  */
-function visible(slugOrId: string): Competition | null {
+function visible(slugOrId: string, projector?: Request): Competition | null {
   const competition = findCompetition(slugOrId)
-  if (!competition || competition.state === 'draft') return null
-  return competition
+  if (!competition) return null
+  if (shownOnK(competition)) return competition
+  if (projector && projector.query.audience === 'class' && competition.state !== 'draft'
+    && canSeeCompetition(currentStaff(projector), competition)) return competition
+  return null
 }
 
 /**
@@ -704,7 +720,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
     const me = currentEntrant(req)
     const mine = me ? myCompetitionIds(me.id) : new Set<string>()
     const rows = listCompetitions()
-      .filter((competition) => competition.state !== 'draft')
+      .filter(shownOnK)
       .map((competition) => {
         const summary = summaryOf(competition)
         const about = me ? mineIn(competition, me) : null
@@ -738,7 +754,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
 
   /** The page of one competition: the task, the files to download, the checking conditions. */
   router.get('/api/k/competitions/:slug', async (req, res) => {
-    const competition = visible(req.params.slug)
+    const competition = visible(req.params.slug, req)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
     const summary = summaryOf(competition)
@@ -915,7 +931,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
    * page.
    */
   router.get('/api/k/competitions/:slug/leaderboard', (req, res) => {
-    const competition = visible(req.params.slug)
+    const competition = visible(req.params.slug, req)
     if (!competition) return refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
     const me = currentEntrant(req)
     /*
@@ -1022,21 +1038,30 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
       'X-Accel-Buffering': 'no',
     })
     let last = ''
+    let tick: ReturnType<typeof setInterval> | undefined
+    let beat: ReturnType<typeof setInterval> | undefined
+    const stop = (): void => {
+      clearInterval(tick)
+      clearInterval(beat)
+    }
     const push = (): void => {
-      const fresh = findCompetition(competition.id)
-      if (!fresh) return
+      // Taken off /k meanwhile: the stream ends, and the reconnect gets the door's 404.
+      const fresh = visible(competition.id)
+      if (!fresh) {
+        stop()
+        res.end()
+        return
+      }
       const body = JSON.stringify(submissionsView(fresh, me))
       if (body === last) return
       last = body
       res.write(`event: state\ndata: ${body}\n\n`)
     }
     push()
-    const tick = setInterval(push, 1000)
-    const beat = setInterval(() => res.write(': keep-alive\n\n'), 20_000)
-    req.on('close', () => {
-      clearInterval(tick)
-      clearInterval(beat)
-    })
+    if (res.writableEnded) return
+    tick = setInterval(push, 1000)
+    beat = setInterval(() => res.write(': keep-alive\n\n'), 20_000)
+    req.on('close', stop)
   })
 
   /**
@@ -1158,6 +1183,8 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
          */
         const still = getEntrant(me.id)
         if (!still || still.disabled || !takesPart(competition.id, me.id)) throw new EntrantGone()
+        // Taken off /k while the body was arriving: refused like a missing competition.
+        if (!visible(competition.id)) throw new CompetitionGone()
         const accepted = acceptPinnedSubmission(competition, me.id, fileName, body.length, revision, bundleId, { startedAt })
         try {
           ensureCompetition(competition.id)
@@ -1322,6 +1349,7 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
 
 /** The person was removed, or their key turned off, while their upload was arriving. */
 class EntrantGone extends Error {}
+class CompetitionGone extends Error {}
 
 /*
  * The intake transaction re-checks what the door checked before the body
@@ -1429,6 +1457,8 @@ function readNotebook(req: Request, res: Response, competition: Competition, don
       if (res.headersSent) return
       if (error instanceof EntrantGone) {
         refuse(res, 401, 'unauthenticated', tr('competitions.refusal.signIn'))
+      } else if (error instanceof CompetitionGone) {
+        refuse(res, 404, 'not_found', tr('competitions.refusal.notFound'))
       } else if (error instanceof DependencyStoreError) {
         const intake = INTAKE_REFUSALS[error.code]
         if (intake) refuse(res, error.status, intake.reason, intake.say(competition))

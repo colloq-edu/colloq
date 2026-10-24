@@ -969,6 +969,14 @@ export function statusNote(c: Competition, now: number, pending: number): string
   return `${ended} · ${resultsWords(c, now, pending)}`
 }
 
+/**
+ * «Снять с публикации» in words, for the console's header: since when the
+ * class does not see it. Null while it is published.
+ */
+export function hiddenNote(c: Pick<Competition, 'hiddenAt'>, now: number): string | null {
+  return c.hiddenAt ? tr('admin.competitions.hiddenSince', { when: moment(c.hiddenAt, now) }) : null
+}
+
 /** Whether a submission is in flight now; queue rows are not drawn in the feed. */
 export function inFlight(state: SubmissionState): boolean {
   return state === 'queued' || state === 'running'

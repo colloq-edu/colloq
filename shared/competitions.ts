@@ -184,6 +184,12 @@ export interface Competition {
    * scope rule, server/src/competitions/scope.ts); nothing public reads it.
    */
   courseId?: string | null
+  /**
+   * «Снять с публикации»: when staff took this open or finished competition
+   * off /k; absent or null — shown. While it is set, every participant door
+   * answers as for a missing competition (`shownOnK`); the panel keeps it all.
+   */
+  hiddenAt?: number | null
   createdAt: number
   updatedAt: number
 }
@@ -196,15 +202,25 @@ export interface Competition {
  * which rows are public, and knowing that, an answer can be fitted to the
  * hidden part without solving the task.
  */
-export type CompetitionPublic = Omit<Competition, 'metric' | 'splitSeed' | 'createdBy' | 'courseId'> & {
+export type CompetitionPublic = Omit<Competition, 'metric' | 'splitSeed' | 'createdBy' | 'courseId' | 'hiddenAt'> & {
   metric: Omit<CompetitionMetric, 'code'>
 }
 
 export function publicCompetition(c: Competition): CompetitionPublic {
-  // Who made it and which course holds it are the panel's business: the /k
-  // pages stay exactly what they were before competitions had a course.
-  const { metric, splitSeed: _seed, createdBy: _by, courseId: _course, ...rest } = c
+  // Who made it, which course holds it and whether it was taken off /k are
+  // the panel's business: the /k pages stay exactly what they were before.
+  const { metric, splitSeed: _seed, createdBy: _by, courseId: _course, hiddenAt: _hidden, ...rest } = c
   return { ...rest, metric: { name: metric.name, direction: metric.direction } }
+}
+
+/**
+ * Whether a competition exists on /k at all: not a draft (it has no data and
+ * no verified baseline yet) and not taken off by «Снять с публикации». Every
+ * participant door, the public list and the link card ask this one question,
+ * so a hidden competition cannot surface through a door nobody remembered.
+ */
+export function shownOnK(c: Pick<Competition, 'state' | 'hiddenAt'>): boolean {
+  return c.state !== 'draft' && !c.hiddenAt
 }
 
 /* ------------------------------------------------------------------ files */

@@ -10,6 +10,7 @@
  */
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { setLocaleResolver, tr } from '../shared/i18n.js'
 import {
   METRIC_PRESETS,
@@ -23,6 +24,7 @@ import {
   deadlineLine,
   etaWords,
   feedWhen,
+  hiddenNote,
   inFlight,
   isUntouchedPreset,
   lateQuery,
@@ -776,4 +778,39 @@ test('the tab speaks the instance language, and in English it is a translation',
   assert.doesNotMatch(line.tail, /[а-яА-Я]/)
   locale = 'ru'
   assert.equal(leftWords(6 * DAY + 4 * HOUR), '6 дн 4 ч')
+})
+
+test('«Снять с публикации»: the console and the list say hidden beside the phase, and the way back sits where the way out was', () => {
+  const at = new Date(2026, 9, 24, 14, 20).getTime()
+  assert.equal(hiddenNote(competition(), at), null)
+  assert.equal(hiddenNote(competition({ hiddenAt: null }), at), null)
+  assert.equal(hiddenNote(competition({ hiddenAt: at }), at + HOUR), 'Скрыто от участников: сегодня, 14:20')
+  assert.equal(tr('admin.competitions.hiddenBadge'), 'Скрыто')
+  assert.equal(tr('admin.competitions.unpublish'), 'Снять с публикации')
+  assert.equal(tr('admin.competitions.republish'), 'Опубликовать снова')
+  // The confirmation says all four things: the list and the link, no new
+  // submissions, the runs in flight finish, everything is kept.
+  const body = tr('admin.competitions.unpublishBody')
+  for (const words of [/из списка/, /по ссылке/, /Новые посылки не принимаются/, /досчитаются/, /сохранятся/]) assert.match(body, words)
+  setLocaleResolver(() => 'en')
+  assert.match(hiddenNote(competition({ hiddenAt: at }), at + HOUR)!, /^Hidden from participants: today, (14:20|02:20 PM)$/)
+  assert.equal(tr('admin.competitions.unpublish'), 'Unpublish')
+  assert.equal(tr('admin.competitions.republish'), 'Publish again')
+  assert.doesNotMatch(tr('admin.competitions.unpublishBody'), /[а-яА-ЯёЁ]/)
+  assert.match(tr('admin.competitions.unpublishBody'), /finish and are scored as usual/)
+
+  const flat = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8').replace(/\s+/g, ' ')
+  const live = flat('web/src/admin/screens/competitions/Live.svelte')
+  const actions = live.slice(live.indexOf('{#snippet actions()}'), live.indexOf('{/snippet}', live.indexOf('{#snippet actions()}')))
+  // Both actions in the header, one at a time, for whoever runs it (not owner-only like «Завершить сейчас»).
+  assert.match(actions, /\{#if c\.hiddenAt\}.*republish\(\).*tr\('admin\.competitions\.republish'\).*\{:else\}.*unpublishing = true.*tr\('admin\.competitions\.unpublish'\)/)
+  assert.doesNotMatch(actions.slice(0, actions.indexOf("tr('admin.competitions.unpublish')")), /isOwner/)
+  // The unpublish confirmation is a dialog of its own, with the body above.
+  assert.match(live, /\{#if unpublishing\}.*role="dialog".*tr\('admin\.competitions\.unpublishHeading'.*tr\('admin\.competitions\.unpublishBody'\).*void unpublish\(\)/)
+  // The header badge and line beside the phase.
+  assert.match(live, /<Badge word=\{phaseWord\(phase\)\}[^>]*\/> \{#if c\.hiddenAt\} .*<Badge word=\{tr\('admin\.competitions\.hiddenBadge'\)\}/)
+  assert.match(live, /hiddenNote\(c, now\)/)
+  // The list row: the same badge, beside the phase word.
+  const list = flat('web/src/admin/screens/Competitions.svelte')
+  assert.match(list, /<Badge word=\{phaseWord\(phase\)\}[^>]*\/> \{#if c\.hiddenAt\} .*<Badge word=\{tr\('admin\.competitions\.hiddenBadge'\)\}/)
 })
