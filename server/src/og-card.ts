@@ -22,6 +22,7 @@ import { Resvg } from '@resvg/resvg-js'
 import { tr, translate } from '@shared/i18n'
 import type { Locale } from '@shared/i18n'
 import { plural } from '@shared/plural'
+import type { ContestLanguage, ContestRules } from '@shared/contests'
 
 export const CARD_WIDTH = 1200
 export const CARD_HEIGHT = 630
@@ -239,14 +240,15 @@ export function roomCardPng(room: RoomCard): Promise<Buffer> {
   return png
 }
 
-/* --------------------------------------------- competitions and courses */
+/* ---------------------------------------- competitions, contests, courses */
 
 /*
- * The same card for a competition, a course and the competitions list: the
- * room's layout (logo, a caption in capitals, the big name, a line in mono, a
- * sentence, the host; a white panel on the right with a button), so a link to
- * any of them reads as the same product in a chat. What changes is the panel:
- * a competition shows its metric and its numbers, a course its classes.
+ * The same card for a competition, a contest, a course and the competitions
+ * list: the room's layout (logo, a caption in capitals, the big name, a line
+ * in mono, a sentence, the host; a white panel on the right with a button),
+ * so a link to any of them reads as the same product in a chat. What changes
+ * is the panel: a competition shows its metric and its numbers, a contest its
+ * rules, problems and languages, a course its classes.
  */
 
 export interface CompetitionCard {
@@ -260,6 +262,24 @@ export interface CompetitionCard {
   metricDirection: 'higher' | 'lower'
   entrants: number
   perDay: number
+  host: string
+  language: Locale
+  timeZone: string
+}
+
+export interface ContestCard {
+  title: string
+  blurb: string
+  /** live, finished, or not started yet; a draft or one taken off publication never gets a card. */
+  phase: 'live' | 'finished' | 'upcoming'
+  startsAt: number | null
+  endsAt: number | null
+  /** Submissions are still taken after the end («дорешивание»). */
+  upsolving: boolean
+  rules: ContestRules
+  problems: number
+  entrants: number
+  languages: ContestLanguage[]
   host: string
   language: Locale
   timeZone: string
@@ -398,6 +418,40 @@ function competitionCard(card: CompetitionCard): Node {
   )
 }
 
+/** A language as the card names it: the family, not the standard — «C++», not «C++20». */
+const LANGUAGE_SHORT: Record<ContestLanguage, string> = { python3: 'Python', cpp20: 'C++', c17: 'C' }
+
+function contestPhaseLine(card: ContestCard): string {
+  const say = sayIn(card.language)
+  const when = (at: number) => dateTime(at, card.language, card.timeZone)
+  if (card.phase === 'finished') {
+    const over = say('server.ogCard.contestFinished')
+    return (card.upsolving ? `${over} · ${say('server.ogCard.upsolving')}` : over).toUpperCase()
+  }
+  if (card.phase === 'upcoming' && card.startsAt !== null) return say('server.ogCard.startsAt', { p0: when(card.startsAt) }).toUpperCase()
+  if (card.endsAt !== null) return say('server.ogCard.until', { p0: when(card.endsAt) }).toUpperCase()
+  return say('server.ogCard.open').toUpperCase()
+}
+
+function contestCard(card: ContestCard): Node {
+  const say = sayIn(card.language)
+  const languages = card.languages.map((id) => LANGUAGE_SHORT[id]).join(' · ')
+  return frame(
+    leftColumn(say('server.ogCard.contest'), card.title, contestPhaseLine(card), card.blurb ? cardSentence(card.blurb, 150) : null, card.host),
+    panel(
+      [
+        fact(say('server.ogCard.rules'), card.rules === 'ioi' ? 'IOI' : 'ICPC'),
+        h('div', { display: 'flex', flexDirection: 'row', gap: 28 }, [
+          fact(say('server.ogCard.problems'), String(card.problems)),
+          fact(say('server.ogCard.entrants'), String(card.entrants)),
+        ]),
+        ...(languages ? [fact(say('server.ogCard.languages'), languages, 24)] : []),
+      ],
+      card.phase === 'finished' ? say('server.ogCard.seeResults') : say('server.ogCard.takePart'),
+    ),
+  )
+}
+
 function lessonsLabel(total: number, language: Locale): string {
   const say = sayIn(language)
   if (language === 'en') return say(total === 1 ? 'server.ogCard.lessonsOne' : 'server.ogCard.lessonsMany', { p0: total })
@@ -470,6 +524,14 @@ export function competitionCardKey(card: CompetitionCard): string {
 
 export function competitionCardPng(card: CompetitionCard): Promise<Buffer> {
   return cachedPng(competitionCardKey(card), () => renderNode(competitionCard(card)))
+}
+
+export function contestCardKey(card: ContestCard): string {
+  return `contest ${JSON.stringify(card)}`
+}
+
+export function contestCardPng(card: ContestCard): Promise<Buffer> {
+  return cachedPng(contestCardKey(card), () => renderNode(contestCard(card)))
 }
 
 export function courseCardKey(card: CourseCard): string {

@@ -9,10 +9,11 @@
  *
  * A room has its own image, with the class name, drawn on the server
  * (og-card.ts, route /og/rooms/<id>.png); so do a competition
- * (/og/competitions/<slug>.png), the competitions list (/og/competitions.png)
- * and a course (/og/courses/<handle>.png); a class page in a course shows
- * its course's card under its own title. Other pages share a common one,
- * from web/public/og/colloq.png.
+ * (/og/competitions/<slug>.png), a contest (/og/contests/<slug>.png), the
+ * competitions list (/og/competitions.png) and a course
+ * (/og/courses/<handle>.png); a class page in a course shows its course's
+ * card under its own title. Other pages share a common one, from
+ * web/public/og/colloq.png.
  */
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -26,9 +27,11 @@ import { config } from './config.js'
 import { getSession } from './db.js'
 import type { SessionInfo } from '@shared/protocol'
 import type { PageExtras } from './frontend-html.js'
-import { CARD_HEIGHT, CARD_WIDTH, type CompetitionCard, type CompetitionsCard, type CourseCard } from './og-card.js'
+import { CARD_HEIGHT, CARD_WIDTH, type CompetitionCard, type CompetitionsCard, type ContestCard, type CourseCard } from './og-card.js'
 import { shownOnK } from '@shared/competitions'
+import { contestPhase, shownToParticipants } from '@shared/contests'
 import { findCompetition, listCompetitionEntrants } from './competitions/store.js'
+import { contestCounts, findContest } from './contests/store.js'
 import { findCourse, findPublication, listMaterials } from './publish/store.js'
 import { pageContext, pageDay, pageHidden, publicRows } from './routes/course-view.js'
 import { instanceTimeZone, instanceToday } from './time-zone.js'
@@ -43,6 +46,8 @@ const ROOM_PATH = /^\/s\/([A-Za-z0-9_-]+)(?:\/|$)/
 /** The competitions list, a competition's page and its tabs (web/src/lib/routes.ts); never the key link `/k/t/<key>`. */
 const COMPETITIONS_PATH = /^\/k\/?$/
 const COMPETITION_PATH = /^\/k\/([a-z0-9-]{1,64})(?:\/(?:submissions|leaderboard|dependencies)(?:\/screen)?)?\/?$/
+/** A contest's page: its problems by letter and its tabs (web/src/lib/routes.ts · CONTEST_PATH). */
+const CONTEST_PATH = /^\/a\/([a-z0-9-]{1,64})(?:\/(?:[a-z]|submissions|questions|leaderboard(?:\/screen)?))?\/?$/
 /** A course's public page. */
 const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
 /** A class page and its notebook tabs (`/p/ml-strong-04/seminar`). */
@@ -125,6 +130,37 @@ export function competitionCardOf(slug: string, language: Locale, now = Date.now
       metricDirection: competition.metric.direction,
       entrants: listCompetitionEntrants(competition.id).length,
       perDay: competition.limits.perDay,
+      host: cardHost(),
+      language,
+      timeZone: instanceTimeZone(),
+    },
+  }
+}
+
+/**
+ * The card of a contest at `/a/<slug>`, or null: a draft and one taken off
+ * publication answer every participant door as missing (@shared/contests ·
+ * shownToParticipants), and a card in a chat is one more such door. The
+ * number of problems is no secret before the start: the `/k` list shows it.
+ */
+export function contestCardOf(slug: string, language: Locale, now = Date.now()): { card: ContestCard; slug: string } | null {
+  const contest = findContest(slug)
+  if (!contest || !shownToParticipants(contest)) return null
+  const phase = contestPhase(contest, now)
+  const counts = contestCounts(contest.id)
+  return {
+    slug: contest.slug,
+    card: {
+      title: contest.title,
+      blurb: contest.blurb,
+      phase: phase === 'over' ? 'finished' : phase === 'soon' ? 'upcoming' : 'live',
+      startsAt: contest.startsAt,
+      endsAt: contest.endsAt,
+      upsolving: contest.upsolving,
+      rules: contest.rules,
+      problems: counts.problems,
+      entrants: counts.entrants,
+      languages: contest.languages,
       host: cardHost(),
       language,
       timeZone: instanceTimeZone(),
@@ -243,48 +279,56 @@ export async function linkPreview(
   const session = room ? getSession(room[1]) : null
   const siteName = 'Colloq'
   const origin = config.publicUrl.replace(/\/+$/, '')
-  // A competition, the competitions list and a course have their own cards
-  // too (og-card.ts); an unknown or draft one looks like any other page.
+  // A competition, a contest, the competitions list and a course have their
+  // own cards too (og-card.ts); an unknown or draft one looks like any other page.
   const competitionSlug = session ? null : COMPETITION_PATH.exec(requestPath)?.[1] ?? null
   const competition = competitionSlug ? competitionCardOf(competitionSlug, language) : null
+  const contestSlug = session || competition ? null : CONTEST_PATH.exec(requestPath)?.[1] ?? null
+  const contest = contestSlug ? contestCardOf(contestSlug, language) : null
   const competitions = !session && COMPETITIONS_PATH.test(requestPath)
-  const courseHandle = session || competition ? null : COURSE_PATH.exec(requestPath)?.[1] ?? null
+  const courseHandle = session || competition || contest ? null : COURSE_PATH.exec(requestPath)?.[1] ?? null
   const course = courseHandle ? courseCardOf(courseHandle, language) : null
-  const pageHandle = session || competition || course ? null : PAGE_PATH.exec(requestPath)?.[1] ?? null
+  const pageHandle = session || competition || contest || course ? null : PAGE_PATH.exec(requestPath)?.[1] ?? null
   const page = pageHandle ? pageCardOf(pageHandle, language) : null
-  const own = Boolean(session || competition || course || competitions || page)
+  const own = Boolean(session || competition || contest || course || competitions || page)
   const title = session
     ? `${session.name} · ${siteName}`
     : competition
       ? `${competition.card.title} · ${siteName}`
-      : course
-        ? `${course.card.name} · ${siteName}`
-        : page
-          ? `${page.title} · ${siteName}`
-          : competitions
-            ? tr('server.linkPreview.competitionsTitle')
-            : tr('server.linkPreview.title')
+      : contest
+        ? `${contest.card.title} · ${siteName}`
+        : course
+          ? `${course.card.name} · ${siteName}`
+          : page
+            ? `${page.title} · ${siteName}`
+            : competitions
+              ? tr('server.linkPreview.competitionsTitle')
+              : tr('server.linkPreview.title')
   const description = session
     ? tr('server.linkPreview.roomDescription')
     : competition
       ? competition.card.blurb.trim() || tr('server.linkPreview.competitionDescription')
-      : course
-        ? course.description
-        : page
-          ? page.description
-          : competitions
-            ? tr('server.linkPreview.competitionsDescription')
-            : tr('server.linkPreview.description')
+      : contest
+        ? contest.card.blurb.trim() || tr('server.linkPreview.contestDescription')
+        : course
+          ? course.description
+          : page
+            ? page.description
+            : competitions
+              ? tr('server.linkPreview.competitionsDescription')
+              : tr('server.linkPreview.description')
   const courseCard = course ?? page?.course ?? null
   const image = session
     ? roomImage(origin, session)
     : competition
       ? `${origin}/og/competitions/${competition.slug}.png?v=${cardVersion(competition.card)}`
-      : courseCard
-        ? `${origin}/og/courses/${courseCard.handle}.png?v=${cardVersion(courseCard.card)}`
-        : competitions
-          ? `${origin}/og/competitions.png?v=${cardVersion(competitionsCardOf(language))}`
-          : await genericImage(origin, staticDir)
+      : contest
+        ? `${origin}/og/contests/${contest.slug}.png?v=${cardVersion(contest.card)}`
+        : courseCard
+          ? `${origin}/og/courses/${courseCard.handle}.png?v=${cardVersion(courseCard.card)}`
+          : competitions
+            ? `${origin}/og/competitions.png?v=${cardVersion(competitionsCardOf(language))}`
+            : await genericImage(origin, staticDir)
 
   const tags: Array<[string, string]> = [
     ['og:type', 'website'],
