@@ -2542,7 +2542,12 @@ summary:focus-visible {
 
 /* The competitions section reuses the council's layout on the page's own
    background, so the sections around it keep alternating; its note stands
-   under the scene the same way the council's does, with the same margin. */
-.competitions-section .scene-band + .inner .council-kernel {
+   under the scene the same way the council's does, with the same margin.
+   The contests section after it takes the surface back. */
+.contests-section {
+  background: var(--surface);
+}
+.competitions-section .scene-band + .inner .council-kernel,
+.contests-section .scene-band + .inner .council-kernel {
   margin-top: clamp(28px, 3vw, 40px);
 }

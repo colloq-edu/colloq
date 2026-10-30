@@ -168,7 +168,7 @@
       crossorigin
     />
 
-    <link rel="stylesheet" href="styles.css?v=c32c30cb" />
+    <link rel="stylesheet" href="styles.css?v=09651fec" />
   </head>
 
   <body>
@@ -220,8 +220,8 @@
               <a class="action-primary" href="#kak"
                 >Посмотреть, как это работает <span aria-hidden="true">↗</span></a
               >
-              <a class="action-text" href="#sorevnovaniya"
-                >Новое: Соревнования <span aria-hidden="true">↓</span></a
+              <a class="action-text" href="#kontesty"
+                >Новое: Контесты <span aria-hidden="true">↓</span></a
               >
             </div>
             <div class="room-line" aria-hidden="true">
@@ -475,8 +475,8 @@
       <section class="section competitions-section" id="sorevnovaniya" aria-labelledby="competitions-h">
         <div class="inner council-layout">
           <div class="council-copy">
-            <p class="label">04 / Соревнования <span class="new-tag">Новое</span></p>
-            <h2 class="h2" id="competitions-h">Задача<br />с закрытой проверкой —<br />как на Kaggle.</h2>
+            <p class="label">04 / Соревнования</p>
+            <h2 class="h2" id="competitions-h">Задача<br />с закрытой проверкой — <br />как на Kaggle.</h2>
           </div>
           <div class="council-copy">
             <p class="prose">
@@ -519,6 +519,60 @@
             <strong>Учебное соревнование, не экзамен.</strong> Платформа не проверяет, кто сидит за
             клавиатурой. Для разбора есть «Лидерборд на проектор» — одна таблица, без имён файлов и
             служебных отметок.
+          </p>
+        </div>
+      </section>
+
+      <section class="section contests-section" id="kontesty" aria-labelledby="contests-h">
+        <div class="inner council-layout">
+          <div class="council-copy">
+            <p class="label">05 / Контесты <span class="new-tag">Новое</span></p>
+            <h2 class="h2" id="contests-h">Задачи с тестами — <br />как на Яндекс Контесте.</h2>
+          </div>
+          <div class="council-copy">
+            <p class="prose">
+              Соберите из задач A, B, C… контрольную или тренировку. Участник пишет решение на
+              Python, C++ или C прямо на странице задачи и через секунды видит вердикт: OK, WA, TL,
+              ML, RE — с номером теста, на котором решение не прошло.
+            </p>
+            <ul class="council-points">
+              <li>
+                <span>01</span>Каждая посылка проверяется в одноразовом контейнере без сети, а ответы к
+                тестам программе недоступны.
+              </li>
+              <li>
+                <span>02</span>Правила ICPC — штраф за попытки и заморозка таблицы в конце — или IOI с
+                баллами за тесты и группы тестов.
+              </li>
+              <li>
+                <span>03</span>Своя страница по ссылке вида /a/имя, вход по тому же ключу, что и в
+                соревнованиях.
+              </li>
+            </ul>
+            <p class="council-ai">
+              Эталонное решение проверяется как посылка и может само записать ответы к тестам;
+              контест не откроется, пока эталон не проходит все тесты.
+            </p>
+          </div>
+        </div>
+        <figure class="scene-band">
+          <div class="scene-plate">
+            <img
+              src="/img/scenes/contests-ru-light.svg"
+              width="880"
+              height="380"
+              alt="Первое решение Анны по задаче C превысило время на тесте 9. Новая посылка #114 встаёт наверх в «Посылках по задаче C», проходит проверку тест за тестом, с 1-го по 22-й, и принимается, а в таблице ICPC клетка C у Анны меняется с −1 на +1 (1:42), решённых становится 4, и строка поднимается с 4-го места на 2-е"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
+          <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+        </figure>
+        <div class="inner">
+          <p class="council-kernel">
+            <strong>Контест для пары, не олимпиада.</strong> Платформа не проверяет, кто сидит за
+            клавиатурой. В консоли контеста видны вывод каждого теста и вопросы участников; после
+            правки тестов посылки можно перепроверить, а таблицу — вывести на проектор.
           </p>
         </div>
       </section>
@@ -953,8 +1007,8 @@ df.shape</pre
               <summary>Можно вести здесь весь курс?</summary>
               <p>
                 Во многом да: у курса есть своя страница с планом по датам и материалами каждого
-                занятия, а для задач с проверкой — соревнования с лидербордом. Оценки и ведомости
-                остаются в вашей системе управления курсом.
+                занятия, а для задач с проверкой — соревнования с лидербордом и контесты с тестами.
+                Оценки и ведомости остаются в вашей системе управления курсом.
               </p>
             </details>
           </div>

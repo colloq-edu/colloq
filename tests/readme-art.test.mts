@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { complaints, OUT_DIRS, renderAll, sceneFile } from '../scripts/readme-art.mts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SLUGS = ['room', 'run', 'council', 'lecture', 'oracle', 'competitions'] as const
+const SLUGS = ['room', 'run', 'council', 'lecture', 'oracle', 'competitions', 'contests'] as const
 const LANGS = ['en', 'ru'] as const
 const THEMES = ['light', 'dark'] as const
 
@@ -29,7 +29,7 @@ const expected = SLUGS.flatMap((slug) =>
   LANGS.flatMap((lang) => THEMES.map((theme) => sceneFile(slug, lang, theme))),
 )
 
-test('the generator prints all twenty-four files under the expected names', () => {
+test('the generator prints all twenty-eight files under the expected names', () => {
   assert.deepEqual([...files.keys()].sort(), [...expected].sort())
 })
 
@@ -82,20 +82,27 @@ test('every scene has its language at the root and a caption in that language', 
  * and format names. Python stays Python in both languages.
  */
 const CODE_WORDS = new Set([
+  'aliev', // @t_aliev: a contest board names people by their Telegram handles, the same in both languages
+  'annasmirnova', // @annasmirnova
+  'belova', // @marfa_belova
   'csv', // "scores.csv"
   'dtype', // Name: score, dtype: float64
   'float', // ...float64
   'for', // for n in range(10**9)
   'group', // df.groupby("group")
   'groupby',
+  'icpc', // в таблице ICPC (contests.rules.icpc: «правила ICPC»)
   'ipad', // ПУЛЬТ ЛЕКЦИИ · IPAD
   'ipynb', // lgbm_v4.ipynb
   'keyerror', // KeyError: 'scores'
   'lgbm', // lgbm_v4.ipynb
   'mape', // ПУБЛИЧНЫЙ MAPE
+  'marfa', // @marfa_belova
   'mean', // .mean()
   'name', // Name: score
+  'orlov', // @d_orlov
   'pdf', // PDF, ваше перо, все экраны
+  'petrov', // @o_petrov
   'range',
   'read', // pd.read_csv
   'round', // .round(2)
