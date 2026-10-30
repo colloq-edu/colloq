@@ -10,6 +10,8 @@
   import Seminars from '@/admin/screens/Seminars.svelte'
   import Courses from '@/admin/screens/Courses.svelte'
   import Competitions from '@/admin/screens/Competitions.svelte'
+  import Contests from '@/admin/screens/Contests.svelte'
+  import { readContestRoute } from '@/admin/contests'
   import Publish from '@/admin/screens/Publish.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
   import ResourcesTab from '@/admin/screens/ResourcesTab.svelte'
@@ -93,16 +95,18 @@
               ? 'environments'
               : path.startsWith('/admin/competitions')
                 ? 'competitions'
-                : path.startsWith('/admin/courses')
-                  ? 'courses'
-                  : 'seminars',
+                : path.startsWith('/admin/contests')
+                  ? 'contests'
+                  : path.startsWith('/admin/courses')
+                    ? 'courses'
+                    : 'seminars',
   )
   /**
    * The tab's own list is the open screen: it counts itself for the rail. A
    * single competition or course, or a class page opened from a course, is
    * not — and the rail asks for that number on its own (AdminShell).
    */
-  const LIST_PATHS = new Set(['/admin', '/admin/courses', '/admin/competitions', '/admin/environments', '/admin/teachers'])
+  const LIST_PATHS = new Set(['/admin', '/admin/courses', '/admin/competitions', '/admin/contests', '/admin/environments', '/admin/teachers'])
   const listShown = $derived(LIST_PATHS.has(path.replace(/\/+$/, '') || '/admin'))
 
   /*
@@ -125,6 +129,13 @@
   const competitionTab = $derived(
     (competitionRoute?.[2] ?? 'submissions') as 'submissions' | 'board' | 'entrants' | 'settings',
   )
+  /*
+   * A contest, its console's tab and the problem open in its editor are an
+   * address for the same reasons as a competition's (admin/contests.ts ·
+   * readContestRoute): «Лидерборд» is linked to a colleague, a problem is
+   * returned to between two uploads of its tests.
+   */
+  const contestRoute = $derived(readContestRoute(path.replace(/\/+$/, '')))
   /* Publishing is an address too: it is the screen where a decision is made. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
   /* A machine that runs submissions is a page under Resources (admin/runners.ts · machinePagePath). */
@@ -358,6 +369,13 @@
       <Courses open={openCourse} edit={query.get('edit')} {navigate} />
     {:else if tab === 'competitions'}
       <Competitions open={openCompetition} tab={competitionTab} {navigate} />
+    {:else if tab === 'contests'}
+      <Contests
+        open={contestRoute?.id ?? null}
+        tab={contestRoute?.tab ?? 'submissions'}
+        problem={contestRoute?.problem ?? null}
+        {navigate}
+      />
     {:else if tab === 'environments'}
       <Environments />
     {:else if tab === 'oracle'}

@@ -1,6 +1,8 @@
 import type {MessageCatalog} from '../i18n-types.js'
+import { contestAdminMessages } from './contests-admin.js'
 
 export const adminMessages: MessageCatalog = {
+  ...contestAdminMessages,
   "admin.resources.cpuLabel": {
     "ru": "Процессор, ядер",
     "en": "Processor, cores"

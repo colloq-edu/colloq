@@ -49,6 +49,7 @@ import { backfillRevisionImages, pinLegacySubmissions } from './dependencies/rev
 import { competitionBackend } from './competitions/runner-port.js'
 import { assertCompetitionCapability } from './competitions/capabilities.js'
 import { createWorkerStartup } from './competitions/worker-startup.js'
+import { startContestJudge, stopContestJudge } from './contests/pump.js'
 import { startRemoteRunners, stopRemoteRunners } from './competitions/remote/liveness.js'
 import { installOutboundProxy } from './outbound.js'
 import { migratePages } from './publish/migrate-pages.js'
@@ -213,6 +214,14 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * anyway.
    */
   void workerStartup.start()
+  /*
+   * The contests' judge (contests/pump.ts) on its own, not behind the
+   * competitions' worker: it asks nothing of their runtime. What the previous
+   * life left running goes back to the queue first, the judge's leftover
+   * containers are swept, then the tick — which also moves the contests'
+   * phases by the clock, judge or no judge.
+   */
+  void startContestJudge().catch((error: unknown) => console.error('[contests] the judge did not start', error))
 })
 
 /**
@@ -348,6 +357,8 @@ async function shutdown(signal: string): Promise<void> {
     await workerStartup.stop()
     await stopDependencyPump()
     await stopCompetitionPump()
+    // Running judgings go back to the queue uncounted and their containers are stopped (contests/pump.ts).
+    await stopContestJudge()
   } catch (err) {
     console.error('colloq: could not stop the competition queue:', err instanceof Error ? err.message : err)
   }

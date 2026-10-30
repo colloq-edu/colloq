@@ -192,7 +192,7 @@ if [ "$STATE" = "$APP" ]; then SHOW=""; else SHOW="$STATE/"; fi
 
 # What goes into the file archive; see the header for why each one.
 set --
-for p in workspace data/competitions data/dependencies data/blobs data/page-files data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
+for p in workspace data/competitions data/contests data/dependencies data/blobs data/page-files data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
   if [ -e "$p" ] || [ -L "$p" ]; then set -- "$@" "$p"; fi
 done
 

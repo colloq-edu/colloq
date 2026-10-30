@@ -39,6 +39,7 @@ import { countResponses, metricsEndpoint } from './ops/metrics.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
 import { adminAuditRoutes } from './routes/admin-audit.js'
 import { adminCompetitionRoutes } from './routes/admin-competitions.js'
+import { adminContestRoutes } from './routes/admin-contests.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
@@ -50,6 +51,7 @@ import { REMOTE_API_BASE, REMOTE_API_ROOT } from '@shared/remote-runner'
 import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { competitionRoutes } from './routes/competitions.js'
+import { contestRoutes } from './routes/contests.js'
 import { dependencyRoutes } from './dependencies/routes.js'
 import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
@@ -627,6 +629,9 @@ app.use(adminEnvironmentRoutes())
 // right; participants are answered by their own half below
 // (routes/competitions.ts).
 app.use(adminCompetitionRoutes())
+// The contests' panel, beside the competitions' and under the same right
+// (routes/admin-contests.ts); their participants are answered below.
+app.use(adminContestRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())
 // The ban doors — right behind sign-in: they are about the same people and live
@@ -650,6 +655,10 @@ app.use(councilRoutes())
 // `/api/k` asks for the participant cookie, not the teacher's
 // (routes/competitions.ts).
 app.use(competitionRoutes())
+// Contests share the participant with competitions: the same `/api/k`
+// cookie, slid by the router above on every `/api/k` request — hence after it
+// (routes/contests.ts).
+app.use(contestRoutes())
 app.use(dependencyRoutes())
 
 app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound') }))

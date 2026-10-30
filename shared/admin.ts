@@ -293,6 +293,27 @@ export type AdminAuditAction =
    * (`archive`) — routes/admin-competitions.ts.
    */
   | 'competition.hidden_test_downloaded'
+  /**
+   * Contests (routes/admin-contests.ts): made, edited (`changed` names the
+   * fields; a deleted problem is `deletedProblem`), opened (`reopened` when a
+   * finished one was opened again), finished, deleted, the frozen board
+   * revealed, taken off publication and put back; a problem's tests changed
+   * (`problem` — its letter, `change` — archive, add, edit, delete, clear,
+   * import, copy, answers); submissions judged again (`scope`, `count`); a
+   * participant removed from a contest, by id only (the target is the
+   * entrant, as for the competitions' removal).
+   */
+  | 'contest.created'
+  | 'contest.updated'
+  | 'contest.opened'
+  | 'contest.finished'
+  | 'contest.deleted'
+  | 'contest.unfrozen'
+  | 'contest.hidden'
+  | 'contest.shown'
+  | 'contest.problem.tests'
+  | 'contest.rejudged'
+  | 'contest.entrant.removed'
   | 'environment.created'
   | 'environment.edited'
   | 'environment.deleted'
@@ -370,6 +391,17 @@ export const ADMIN_AUDIT_ACTIONS: readonly AdminAuditAction[] = [
   'competition.republished',
   'competition.entrant_deleted',
   'competition.hidden_test_downloaded',
+  'contest.created',
+  'contest.updated',
+  'contest.opened',
+  'contest.finished',
+  'contest.deleted',
+  'contest.unfrozen',
+  'contest.hidden',
+  'contest.shown',
+  'contest.problem.tests',
+  'contest.rejudged',
+  'contest.entrant.removed',
   'environment.created',
   'environment.edited',
   'environment.deleted',
@@ -398,6 +430,8 @@ export type AdminAuditTargetType =
   | 'course'
   | 'publication'
   | 'competition'
+  /** A contest (routes/admin-contests.ts). */
+  | 'contest'
   | 'entrant'
   | 'environment'
   | 'settings'

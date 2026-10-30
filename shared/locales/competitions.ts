@@ -1,5 +1,6 @@
 import type { MessageCatalog } from '../i18n-types.js'
 import { dependencyMessages } from './dependencies.js'
+import { contestMessages } from './contests.js'
 
 /**
  * Слова соревнований — одни на панель преподавателя и на страницы участника.
@@ -16,6 +17,7 @@ import { dependencyMessages } from './dependencies.js'
  */
 export const competitionsMessages: MessageCatalog = {
   ...dependencyMessages,
+  ...contestMessages,
   /* Состояние соревнования — плашка в списке (A1) и в шапке участника (P2, P3). */
   'competitions.state.draft': { ru: 'ЧЕРНОВИК', en: 'DRAFT' },
   'competitions.state.live': { ru: 'ИДЁТ', en: 'LIVE' },

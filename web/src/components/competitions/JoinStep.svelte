@@ -34,6 +34,19 @@
     onfocused: () => void
     onjoin: (name: string) => void
     onsignin: (key: string) => void
+    /**
+     * The step's words where the page is not a competition's: a contest's
+     * step says «Вступите в контест», and its late hint speaks of upsolving
+     * rather than of a deadline (ContestScreen). Each word left out stays the
+     * competition's.
+     */
+    words?: Partial<Record<'title' | 'hint' | 'lateHint' | 'notOpen' | 'closed', string>>
+    /**
+     * One column whatever the window: the step stands in a narrow column of a
+     * wide page (a contest's solution column), where the key's 360 px beside
+     * the name would leave the name a sliver.
+     */
+    narrow?: boolean
   }
 
   const {
@@ -48,6 +61,8 @@
     onfocused,
     onjoin,
     onsignin,
+    words = {},
+    narrow = false,
   }: Props = $props()
 
   /* The door takes people while it takes notebooks, late ones included. */
@@ -111,7 +126,7 @@
 
 <section
   bind:this={box}
-  class="flex flex-col border-[1.5px] border-brand-2 bg-surface lg:flex-row"
+  class="flex flex-col border-[1.5px] border-brand-2 bg-surface {narrow ? '' : 'lg:flex-row'}"
   aria-labelledby="competition-join-title"
   data-join-step
 >
@@ -130,14 +145,16 @@
         }}
       >
         <h2 id="competition-join-title" class="text-title font-bold leading-6 text-ink">
-          {tr('competitions.p.joinTitle')}
+          {words.title ?? tr('competitions.p.joinTitle')}
         </h2>
         <!-- Past the deadline the name is no promise of a row on the board:
              late submissions never reach it (C1). The step says so itself:
              the late card's "outside the standings" stays on the list, and
              its JOIN leads here. -->
         <p id="competition-join-hint" class="text-ui leading-5 text-muted">
-          {tr(accepting === 'late' ? 'competitions.p.joinLateHint' : 'competitions.p.joinHint')}
+          {accepting === 'late'
+            ? (words.lateHint ?? tr('competitions.p.joinLateHint'))
+            : (words.hint ?? tr('competitions.p.joinHint'))}
         </p>
         <label class="pt-2 text-2xs font-bold text-ink" for="competition-join-name">
           {tr('competitions.handle.label')}
@@ -184,14 +201,16 @@
       </form>
     {:else}
       <h2 id="competition-join-title" class="text-title font-bold leading-6 text-ink">
-        {tr(accepting === 'not_open' ? 'competitions.refusal.notOpen' : 'competitions.refusal.closed')}
+        {accepting === 'not_open'
+          ? (words.notOpen ?? tr('competitions.refusal.notOpen'))
+          : (words.closed ?? tr('competitions.refusal.closed'))}
       </h2>
     {/if}
   </div>
 
   {#if !signedIn}
     <div
-      class="flex shrink-0 flex-col gap-2 border-t border-line px-4 py-4 sm:px-6 sm:py-5 lg:w-[360px] lg:border-l lg:border-t-0"
+      class="flex shrink-0 flex-col gap-2 border-t border-line px-4 py-4 sm:px-6 sm:py-5 {narrow ? '' : 'lg:w-[360px] lg:border-l lg:border-t-0'}"
     >
       <KeySignIn id="competition-join-key-title" busy={signInBusy} refusal={signInRefusal} {onsignin} bind:field={keyField} />
       <p class="text-micro leading-5 text-muted">{tr('competitions.p.joinHaveKey')}</p>

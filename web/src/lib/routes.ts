@@ -229,6 +229,64 @@ export function readCompetitionRoute(path: string): CompetitionRoute | null {
  */
 export const COMPETITIONS_LANDING = '/k'
 
+/*
+ * Contests: `/a/<slug>` — the problems (the contest's first page),
+ * `/a/<slug>/<letter>` — one problem, and the tabs `submissions`,
+ * `leaderboard` (with `/screen`, the projector) and `questions`.
+ *
+ * `/a`, not a second kind under `/k`: `/k/<slug>` is a competition, and two
+ * kinds behind one address would need a lookup before every page
+ * (docs/architecture/contests.md · §0). The slug's letters are the
+ * competitions' own (shared/publish.ts · slugOk): lower case, digits, a hyphen.
+ *
+ * A problem is ONE lower-case letter, the one the tables print in upper case
+ * (shared/contests.ts · problemLetter). A single letter is never a tab's name,
+ * so the problem and the tabs share the segment without a lookup, and
+ * `/a/algo/c` reads as "problem C" to the person who typed it from the board.
+ *
+ * Everything of a contest is one page with one person, as on `/k`: switching a
+ * tab or a problem must not rebuild the screen, drop the draft in the editor
+ * or reopen the live stream — so one expression, not five.
+ */
+const CONTEST_PATH =
+  /^\/a\/([a-z0-9-]{1,64})(?:\/([a-z]|submissions|questions|leaderboard(?:\/screen)?))?\/?$/
+
+/** Which of a contest's pages is open. `screen` is the leaderboard on the projector. */
+export type ContestView = 'problems' | 'submissions' | 'leaderboard' | 'questions' | 'screen'
+
+export interface ContestRoute {
+  slug: string
+  view: ContestView
+  /**
+   * The problem's letter, upper case as every table prints it; `null` — the
+   * contest's first page (the intro, or problem A when there is nothing to
+   * introduce). Only for `problems`.
+   */
+  letter: string | null
+}
+
+/** A contest's page, or null when the address is not one. */
+export function readContestRoute(path: string): ContestRoute | null {
+  const match = CONTEST_PATH.exec(path)
+  if (!match) return null
+  const slug = match[1]
+  const tail = match[2]
+  if (tail === undefined) return { slug, view: 'problems', letter: null }
+  if (tail.length === 1) return { slug, view: 'problems', letter: tail.toUpperCase() }
+  return { slug, view: tail === 'leaderboard/screen' ? 'screen' : (tail as ContestView), letter: null }
+}
+
+/**
+ * The address of a contest's page — the parse above read backwards, so the
+ * tabs and the rail of letters link to exactly what the parser accepts.
+ */
+export function contestRoutePath(route: ContestRoute): string {
+  const base = `/a/${route.slug}`
+  if (route.view === 'problems') return route.letter ? `${base}/${route.letter.toLowerCase()}` : base
+  if (route.view === 'screen') return `${base}/leaderboard/screen`
+  return `${base}/${route.view}`
+}
+
 /** The teacher panel: it parses its own sub-addresses itself. */
 export function isAdminPath(path: string): boolean {
   return path === '/admin' || path.startsWith('/admin/')

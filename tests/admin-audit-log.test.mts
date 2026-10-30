@@ -620,7 +620,16 @@ test('every kind of staff action is recorded somewhere', () => {
    */
   const instance = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-instance.ts'), 'utf8')
   assert.match(instance, /action: 'room\.environment_changed'/)
-  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended', 'runner.classes', 'runner.classes_resumed', 'runner.classes_moved', 'competition.hidden_test_downloaded', 'competition.unpublished', 'competition.republished', 'room.environment_changed'])
+  /*
+   * The contests' eleven are driven through their doors in
+   * tests/contests-api.test.mts, which reads every one of them from this
+   * same log: they need problems with tests, a judge and participants. Each
+   * is recorded by the contests' panel routes, by its own name.
+   */
+  const contests = fs.readFileSync(path.join(import.meta.dirname, '../server/src/routes/admin-contests.ts'), 'utf8')
+  const contestActions = ADMIN_AUDIT_ACTIONS.filter((action) => action.startsWith('contest.'))
+  for (const action of contestActions) assert.ok(contests.includes(`'${action}'`), `${action} is recorded nowhere in admin-contests.ts`)
+  const notDriven = new Set(['environment.made_default', 'competition.entrant_deleted', 'runner.enrolled', 'runner.trusted', 'runner.revoked', 'runner.code_minted', 'runner.code_ended', 'runner.classes', 'runner.classes_resumed', 'runner.classes_moved', 'competition.hidden_test_downloaded', 'competition.unpublished', 'competition.republished', 'room.environment_changed', ...contestActions])
   const missing = ADMIN_AUDIT_ACTIONS.filter((action) => !notDriven.has(action) && !seen.has(action))
   assert.deepEqual(missing, [])
 })

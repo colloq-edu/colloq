@@ -49,6 +49,12 @@
     "description": "A task with a closed evaluation: data, a metric, a leaderboard and a submission queue."
   },
   {
+    "slug": "contests",
+    "group": "teach",
+    "title": "Contests",
+    "description": "Algorithmic problems with tests: judged code, verdicts and an ICPC or IOI leaderboard."
+  },
+  {
     "slug": "lectures",
     "group": "teach",
     "title": "Lecture, projection and console",

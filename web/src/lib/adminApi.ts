@@ -72,6 +72,29 @@ import type {
   SubmissionFeed,
 } from '@shared/competitions-api'
 import type { CompetitionGpuSettingsInput, CompetitionSettings, CompetitionSettingsInput } from '@shared/competitions-settings'
+import type { ContestGroup } from '@shared/contests'
+import type {
+  AdminQuestion,
+  AdminQuestions,
+  AdminStandings,
+  AdminSubmissionDetail,
+  AdminSubmissionRow,
+  AdminSubmissions,
+  AnnouncementBody,
+  AnswerBody,
+  ArchiveImport,
+  ContestEntrantRow,
+  ContestList,
+  ContestPatch,
+  ContestSettings,
+  ContestView,
+  JudgeStatus,
+  NewContestBody,
+  NewTestBody,
+  ProblemPatch,
+  ProblemView,
+  TestPatch,
+} from '@shared/contests-api'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -298,6 +321,126 @@ export { request as adminRequest }
  */
 async function sendForm<T>(path: string, form: FormData): Promise<T> {
   return request<T>(path, { method: 'POST', body: form })
+}
+
+/** The query string of a list door: empty values are left out rather than sent as `?q=`. */
+function queryOf(options: Record<string, string | number | undefined | null>): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  }
+  const tail = query.toString()
+  return tail ? `?${tail}` : ''
+}
+
+/**
+ * The contest doors (`/api/admin/contests`, docs/architecture/contests.md §3).
+ *
+ * A function rather than an object literal inside `adminApi` only so the
+ * paths can share their prefixes: `one(id)` is the contest, `problem(id,
+ * pid)` one of its problems. Answers are the shapes of shared/contests-api.ts.
+ */
+function contestDoors() {
+  const one = (id: string) => `/contests/${encodeURIComponent(id)}`
+  const problem = (id: string, pid: string) => `${one(id)}/problems/${encodeURIComponent(pid)}`
+  const test = (id: string, pid: string, ordinal: number) => `${problem(id, pid)}/tests/${encodeURIComponent(String(ordinal))}`
+  const post = <T>(path: string, body?: unknown) =>
+    request<T>(path, body === undefined ? { method: 'POST' } : { method: 'POST', ...json(body) })
+  return {
+    /** A1: every contest the caller may see, and the judge's strip. */
+    list: () => request<ContestList>('/contests'),
+    /** A new one is always a draft. */
+    create: (body: NewContestBody) => post<ContestView>('/contests', body),
+    /** The instance's judge settings (slots); the owner writes them. */
+    settings: () => request<ContestSettings>('/contests/settings'),
+    saveSettings: (body: { judgeSlots: number | null }) =>
+      request<ContestSettings>('/contests/settings', { method: 'PUT', ...json(body) }),
+    /** «Приостановить проверку» / «Возобновить»: what is running finishes. */
+    pauseJudge: (paused: boolean) => post<JudgeStatus>('/contests/judge/pause', { paused }),
+
+    get: (id: string) => request<ContestView>(one(id)),
+    /** Only the fields sent change (ContestPatch): the editor and the console's settings send their own slices. */
+    update: (id: string, body: ContestPatch) => request<ContestView>(one(id), { method: 'PATCH', ...json(body) }),
+    /** With its problems, tests and every submission. */
+    remove: (id: string) => request<unknown>(one(id), { method: 'DELETE' }),
+    /** Refused with the readiness list when a reference does not pass. */
+    open: (id: string) => post<ContestView>(`${one(id)}/open`),
+    finish: (id: string) => post<ContestView>(`${one(id)}/finish`),
+    reopen: (id: string) => post<ContestView>(`${one(id)}/reopen`),
+    /** The frozen board revealed to the class — a moment of the class, not of the clock. */
+    unfreeze: (id: string) => post<ContestView>(`${one(id)}/unfreeze`),
+    /** «Снять с публикации»: every participant door answers as for a missing contest. */
+    hide: (id: string) => post<ContestView>(`${one(id)}/hide`),
+    show: (id: string) => post<ContestView>(`${one(id)}/show`),
+
+    /* problems */
+    createProblem: (id: string, body: ProblemPatch) => post<ProblemView>(`${one(id)}/problems`, body),
+    updateProblem: (id: string, pid: string, body: ProblemPatch) =>
+      request<ProblemView>(problem(id, pid), { method: 'PATCH', ...json(body) }),
+    deleteProblem: (id: string, pid: string) => request<ContestView>(problem(id, pid), { method: 'DELETE' }),
+    /** The letters follow the order: `ids` is every problem of the contest, first to last. */
+    orderProblems: (id: string, ids: string[]) =>
+      request<ContestView>(`${one(id)}/problems/order`, { method: 'PUT', ...json({ ids }) }),
+    /** A whole problem of another contest, tests and reference included, as a new last letter. */
+    copyProblem: (id: string, fromProblemId: string) => post<ProblemView>(`${one(id)}/problems/copy`, { fromProblemId }),
+    /** A problem from an archive (statement, tests, checker, reference — what the archive holds). */
+    importProblem: (id: string, file: File) => {
+      const form = new FormData()
+      form.append('file', file, file.name)
+      return sendForm<ProblemView>(`${one(id)}/problems/import`, form)
+    },
+
+    /* tests */
+    uploadTests: (id: string, pid: string, file: File, mode: 'replace' | 'append') => {
+      const form = new FormData()
+      form.append('file', file, file.name)
+      return sendForm<ArchiveImport>(`${problem(id, pid)}/tests/archive${queryOf({ mode })}`, form)
+    },
+    addTest: (id: string, pid: string, body: NewTestBody) => post<ProblemView>(`${problem(id, pid)}/tests`, body),
+    updateTest: (id: string, pid: string, ordinal: number, body: TestPatch) =>
+      request<ProblemView>(test(id, pid, ordinal), { method: 'PATCH', ...json(body) }),
+    deleteTest: (id: string, pid: string, ordinal: number) => request<ProblemView>(test(id, pid, ordinal), { method: 'DELETE' }),
+    deleteTests: (id: string, pid: string) => request<ProblemView>(`${problem(id, pid)}/tests`, { method: 'DELETE' }),
+    /** A test's input or answer as a download — the address, not the bytes (they may be 64 MB). */
+    testFileUrl: (id: string, pid: string, ordinal: number, which: 'input' | 'answer') =>
+      `${BASE}${test(id, pid, ordinal)}/${which}`,
+    /** IOI groups' points, the whole table at once. */
+    saveGroups: (id: string, pid: string, groups: ContestGroup[]) =>
+      request<ProblemView>(`${problem(id, pid)}/groups`, { method: 'PUT', ...json({ groups }) }),
+
+    /* the reference */
+    /** Judge the reference on the current tests; the answer carries it queued. */
+    checkReference: (id: string, pid: string) => post<ProblemView>(`${problem(id, pid)}/reference/check`),
+    /** «Ответы из эталона»: the reference writes the answers the tests lack. */
+    writeAnswers: (id: string, pid: string) => post<ProblemView>(`${problem(id, pid)}/reference/answers`),
+    /** «Перепроверить задачу»: every submission of the problem judged again. */
+    rejudgeProblem: (id: string, pid: string) => post<{ queued: number }>(`${problem(id, pid)}/rejudge`),
+
+    /* the console */
+    submissions: (
+      id: string,
+      options: { problem?: string; verdict?: string; entrant?: string; q?: string; limit?: number; offset?: number } = {},
+    ) => request<AdminSubmissions>(`${one(id)}/submissions${queryOf(options)}`),
+    submission: (id: string, sid: string) =>
+      request<AdminSubmissionDetail>(`${one(id)}/submissions/${encodeURIComponent(sid)}`),
+    rejudge: (id: string, sid: string) =>
+      post<AdminSubmissionRow>(`${one(id)}/submissions/${encodeURIComponent(sid)}/rejudge`),
+    /** Unfrozen with full names; `class` — as the participants see it, freeze and all. */
+    standings: (id: string, audience: 'staff' | 'class' = 'staff') =>
+      request<AdminStandings>(`${one(id)}/standings${audience === 'class' ? '?audience=class' : ''}`),
+    standingsCsvUrl: (id: string) => `${BASE}${one(id)}/standings.csv`,
+    entrants: (id: string) => request<{ entrants: ContestEntrantRow[] }>(`${one(id)}/entrants`),
+    removeEntrant: (id: string, entrantId: string) =>
+      request<unknown>(`${one(id)}/entrants/${encodeURIComponent(entrantId)}`, { method: 'DELETE' }),
+    questions: (id: string) => request<AdminQuestions>(`${one(id)}/questions`),
+    answer: (id: string, qid: string, body: AnswerBody) =>
+      post<AdminQuestion>(`${one(id)}/questions/${encodeURIComponent(qid)}/answer`, body),
+    announce: (id: string, body: AnnouncementBody) => post<AdminQuestion>(`${one(id)}/announcements`, body),
+    deleteQuestion: (id: string, qid: string) =>
+      request<unknown>(`${one(id)}/questions/${encodeURIComponent(qid)}`, { method: 'DELETE' }),
+    /** The live stream's address (`EventSource`, event `state`: ContestLiveState); the screen holds the subscription. */
+    streamUrl: (id: string) => `${BASE}${one(id)}/stream`,
+  }
 }
 
 export const adminApi = {
@@ -675,6 +818,19 @@ export const adminApi = {
 
   /** Every entrant on the instance — their identity is shared, not per room. Owner only. */
   listEntrants: () => request<EntrantsList>('/competitions/entrants'),
+
+  /* ------------------------------------------------------------ contests */
+
+  /**
+   * The «Контесты» tab's doors (docs/architecture/contests.md §3), grouped
+   * rather than spelled flat beside the competitions': a contest is a module
+   * of its own, and forty `contestSomething` names among sixty
+   * `competitionSomething` ones would be a list nobody finds a door in.
+   *
+   * Every path is built here, once: the server's routes are written beside
+   * this file in the same release, and a disagreement is fixed in one line.
+   */
+  contests: contestDoors(),
 
   /**
    * A new person with a key, joined to this competition at once: a person

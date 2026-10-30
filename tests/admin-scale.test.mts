@@ -50,6 +50,10 @@ const PANEL = [
     .filter((name) => name.endsWith('.svelte'))
     .map((name) => `${SCREENS}/competitions/${name}`),
   ...fs
+    .readdirSync(path.resolve(import.meta.dirname, '..', SCREENS, 'contests'))
+    .filter((name) => name.endsWith('.svelte'))
+    .map((name) => `${SCREENS}/contests/${name}`),
+  ...fs
     .readdirSync(path.resolve(import.meta.dirname, '..', UI))
     .filter((name) => name.endsWith('.svelte') && name !== 'LanguageMenu.svelte')
     .map((name) => `${UI}/${name}`),

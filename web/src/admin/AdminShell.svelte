@@ -3,6 +3,7 @@
     | 'seminars'
     | 'courses'
     | 'competitions'
+    | 'contests'
     | 'environments'
     | 'oracle'
     | 'teachers'
@@ -22,6 +23,7 @@
     seminars = $state<number | null>(null)
     courses = $state<number | null>(null)
     competitions = $state<number | null>(null)
+    contests = $state<number | null>(null)
     teachers = $state<number | null>(null)
     environments = $state<number | null>(null)
 
@@ -61,6 +63,7 @@
           if (tab === 'seminars') this.seminars = n
           else if (tab === 'courses') this.courses = n
           else if (tab === 'competitions') this.competitions = n
+          else if (tab === 'contests') this.contests = n
           else if (tab === 'teachers') this.teachers = n
           else if (tab === 'environments') this.environments = n
         } catch {
@@ -81,6 +84,7 @@
         ask('competitions', this.competitions, () =>
           adminApi.listCompetitions().then((r) => r.competitions.length),
         ),
+        ask('contests', this.contests, () => adminApi.contests.list().then((r) => r.contests.length)),
         ask('teachers', this.teachers, () => adminApi.listTeachers().then((l) => l.length)),
         ask('environments', this.environments, () =>
           adminApi.listEnvironments().then((r) => r.environments.length),
@@ -167,6 +171,19 @@
       icon: 'table',
       href: '/admin/competitions',
       count: navCounts.competitions,
+    },
+    /*
+     * Contests right under competitions, as the participant's /k list has
+     * them: the same people, the same board's manners, and a task the
+     * teacher sets the class rather than a setting of the server. A module of
+     * its own nonetheless (docs/architecture/contests.md), so a row of its own.
+     */
+    {
+      id: 'contests',
+      label: tr('admin.contests.title'),
+      icon: 'code',
+      href: '/admin/contests',
+      count: navCounts.contests,
     },
     {
       id: 'environments',

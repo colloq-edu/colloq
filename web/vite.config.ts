@@ -128,6 +128,14 @@ function screenLanguage(): Plugin {
  * while entering their name — see firstPaint below.
  */
 const CODEMIRROR = /^(@codemirror\/|@lezer\/|y-codemirror\.next$|style-mod$|w3c-keyname$|crelt$)/
+/*
+ * The C and C++ grammar of the contest editor (components/contests/
+ * CodeEditor.svelte), in a chunk of its own and tested BEFORE the rule above:
+ * matched by it, the grammar would join the room's `codemirror` chunk, which
+ * every room warms on its first paint (ROOM_ALSO), and a notebook would pay
+ * for a language no cell of it can run.
+ */
+const CODEMIRROR_CPP = /^(@codemirror\/lang-cpp|@lezer\/cpp)$/
 const YJS = /^(yjs|y-websocket|y-protocols|y-indexeddb|lib0)$/
 /* marked, DOMPurify and ansi_up are loaded together by lib/render.svelte.ts and
    are useless apart, so they ship as one chunk rather than three requests. */
@@ -179,6 +187,7 @@ function manualChunks(id: string): string | undefined {
   if (id.endsWith('/components/notebook/cm-theme.ts')) return 'codemirror'
   const pkg = packageOf(id)
   if (!pkg) return undefined
+  if (CODEMIRROR_CPP.test(pkg)) return 'codemirror-cpp'
   if (CODEMIRROR.test(pkg)) return 'codemirror'
   if (YJS.test(pkg)) return 'yjs'
   if (RENDER.test(pkg)) return 'render'

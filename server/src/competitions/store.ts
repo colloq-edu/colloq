@@ -30,6 +30,13 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { tr } from '@shared/i18n'
 import { db } from '../db.js'
+/*
+ * The contests' tables, before anything here is prepared: a contest's
+ * participant is this module's entrant, and the identity removal below
+ * (selectAnywhere) asks the contests too whether they still hold the person.
+ * A side-effect module that loads nothing of the contests' rows.
+ */
+import '../contests/schema.js'
 import { entrantKeyDigest, newEntrantKey, sealEntrantKey, unsealEntrantKey } from './key.js'
 import { removeCompetition as removeCompetitionFiles, openFileSha256, pruneSubmissions, sealedFileSha256 } from './storage.js'
 /*
@@ -3539,10 +3546,20 @@ const deleteQueueOf = db.prepare(`
 `)
 const deleteSubmissionsOf = db.prepare('DELETE FROM submissions WHERE competition_id = ? AND entrant_id = ?')
 const deleteEnrollment = db.prepare('DELETE FROM competition_entrants WHERE competition_id = ? AND entrant_id = ?')
+/*
+ * Anything on the instance that still holds the person: a competition (an
+ * enrollment, a submission, the baseline notebook it runs under) — or a
+ * contest (an enrollment, a submission). A contest's participant is this same
+ * entrant (contests/store.ts), so removing someone from a competition must
+ * not take the key their contests still open with; the contests' removal asks
+ * the same five questions from its side (contests/store.ts · selectStillHeld).
+ */
 const selectAnywhere = db.prepare(`
   SELECT 1 FROM competition_entrants WHERE entrant_id = @e
   UNION ALL SELECT 1 FROM submissions WHERE entrant_id = @e
   UNION ALL SELECT 1 FROM competitions WHERE baseline_entrant_id = @e
+  UNION ALL SELECT 1 FROM contest_entrants WHERE entrant_id = @e
+  UNION ALL SELECT 1 FROM contest_submissions WHERE entrant_id = @e
   LIMIT 1
 `)
 const deleteEntrantRow = db.prepare('DELETE FROM entrants WHERE id = ?')
@@ -3572,8 +3589,9 @@ export const removeEntrantRows = db.transaction(
     deleteQueueOf.run(competitionId, entrantId)
     deleteSubmissionsOf.run(competitionId, entrantId)
     deleteEnrollment.run(competitionId, entrantId)
-    // A person is instance-wide: they go only when nothing else holds them.
-    // The service entrant of a sample notebook is held by its competition.
+    // A person is instance-wide: they go only when nothing else holds them —
+    // no other competition and no contest. The service entrant of a sample
+    // notebook is held by its competition.
     const identityRemoved = selectAnywhere.get({ e: entrantId }) === undefined
       && deleteEntrantRow.run(entrantId).changes > 0
     return { submissionIds, identityRemoved }
