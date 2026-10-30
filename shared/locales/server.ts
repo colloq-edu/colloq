@@ -4017,6 +4017,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Соревнование в Colloq: решение — тетрадь целиком, проверка в изолированном контейнере, рейтинг сразу.",
     "en": "A competition in Colloq: the solution is a whole notebook, checked in an isolated container, ranked at once."
   },
+  "server.linkPreview.contestDescription": {
+    "ru": "Контест в Colloq: задачи с тестами, каждая посылка проверяется в изолированном контейнере, вердикт и место в таблице — сразу.",
+    "en": "A contest in Colloq: problems with tests, every submission judged in an isolated container, the verdict and the place on the board at once."
+  },
   "server.linkPreview.competitionsTitle": {
     "ru": "Соревнования · Colloq",
     "en": "Competitions · Colloq"
@@ -4144,6 +4148,30 @@ export const serverMessages: MessageCatalog = {
   "server.ogCard.seeCompetitions": {
     "ru": "Смотреть соревнования",
     "en": "See the competitions"
+  },
+  "server.ogCard.contest": {
+    "ru": "Контест",
+    "en": "Contest"
+  },
+  "server.ogCard.contestFinished": {
+    "ru": "Завершён",
+    "en": "Finished"
+  },
+  "server.ogCard.upsolving": {
+    "ru": "Дорешивание",
+    "en": "Upsolving"
+  },
+  "server.ogCard.rules": {
+    "ru": "Правила",
+    "en": "Rules"
+  },
+  "server.ogCard.problems": {
+    "ru": "Задач",
+    "en": "Problems"
+  },
+  "server.ogCard.languages": {
+    "ru": "Языки",
+    "en": "Languages"
   },
   "server.memoryMustBeWholeMegabytes": {
     "ru": "Память комнаты задаётся целым числом мегабайт.",

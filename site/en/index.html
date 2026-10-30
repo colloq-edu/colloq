@@ -168,7 +168,7 @@
       crossorigin
     />
 
-    <link rel="stylesheet" href="/styles.css?v=c32c30cb" />
+    <link rel="stylesheet" href="/styles.css?v=09651fec" />
   </head>
 
   <body>
@@ -222,8 +222,8 @@
               <a class="action-primary" href="#kak"
                 >See how a class runs <span aria-hidden="true">↗</span></a
               >
-              <a class="action-text" href="#sorevnovaniya"
-                >New: Competitions <span aria-hidden="true">↓</span></a
+              <a class="action-text" href="#kontesty"
+                >New: Contests <span aria-hidden="true">↓</span></a
               >
             </div>
             <div class="room-line" aria-hidden="true">
@@ -477,8 +477,8 @@
       <section class="section competitions-section" id="sorevnovaniya" aria-labelledby="competitions-h">
         <div class="inner council-layout">
           <div class="council-copy">
-            <p class="label">04 / Competitions <span class="new-tag">New</span></p>
-            <h2 class="h2" id="competitions-h">A task with<br />a hidden check —<br />Kaggle-style.</h2>
+            <p class="label">04 / Competitions</p>
+            <h2 class="h2" id="competitions-h">A task with<br />a hidden check — <br />Kaggle-style.</h2>
           </div>
           <div class="council-copy">
             <p class="prose">
@@ -521,6 +521,61 @@
             <strong>A class competition, not an exam.</strong> It does not check who is at the
             keyboard. For the debrief there is <strong>Leaderboard on the projector</strong>: one
             table, without file names or service marks.
+          </p>
+        </div>
+      </section>
+
+      <section class="section contests-section" id="kontesty" aria-labelledby="contests-h">
+        <div class="inner council-layout">
+          <div class="council-copy">
+            <p class="label">05 / Contests <span class="new-tag">New</span></p>
+            <h2 class="h2" id="contests-h">Problems with tests — <br />Codeforces-style.</h2>
+          </div>
+          <div class="council-copy">
+            <p class="prose">
+              Build a class test or a practice round out of problems A, B, C… A participant writes a
+              solution in Python, C++ or C right on the problem’s page and gets a verdict within
+              seconds: OK, WA, TL, ML, RE — with the number of the test it failed.
+            </p>
+            <ul class="council-points">
+              <li>
+                <span>01</span>Every submission is judged in a throwaway container with no network, and
+                the program cannot read the tests’ answers.
+              </li>
+              <li>
+                <span>02</span>ICPC rules — a penalty for attempts and a board frozen at the end — or IOI
+                with points for tests and groups of tests.
+              </li>
+              <li>
+                <span>03</span>Its own page at a link like /a/name, entered with the same key as the
+                competitions.
+              </li>
+            </ul>
+            <p class="council-ai">
+              The reference solution is judged like a submission and can write the tests’ answers
+              itself; a contest does not open until the reference passes every test.
+            </p>
+          </div>
+        </div>
+        <figure class="scene-band">
+          <div class="scene-plate">
+            <img
+              src="/img/scenes/contests-light.svg"
+              width="880"
+              height="380"
+              alt="Anna’s first solution to problem C exceeded the time limit on test 9. Her new submission #114 lands on top of Submissions for C, is judged test by test, 1 to 22, and is accepted, and on the ICPC board her C cell turns from −1 to +1 at 1:42, solved goes to 4, and her row climbs from 4th place to 2nd"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
+          <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
+        </figure>
+        <div class="inner">
+          <p class="council-kernel">
+            <strong>A class contest, not an olympiad.</strong> It does not check who is at the
+            keyboard. The contest console shows every test’s output and the participants’
+            questions; after a test fix the submissions can be rejudged, and the board can go on the
+            projector.
           </p>
         </div>
       </section>
@@ -955,8 +1010,8 @@ df.shape</pre
               <summary>Can a whole course live here?</summary>
               <p>
                 Much of it: a course has its own page with a dated plan and the materials of every
-                class, and competitions with a leaderboard cover tasks with a check. Grades and rosters
-                stay in your own course system.
+                class, and competitions with a leaderboard and contests with tests cover tasks with a
+                check. Grades and rosters stay in your own course system.
               </p>
             </details>
           </div>

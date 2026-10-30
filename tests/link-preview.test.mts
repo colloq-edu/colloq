@@ -133,6 +133,41 @@ test('a competition link carries its title, blurb, own image and address; a draf
   assert.equal(meta((await page('/k/t/abcdefghij')).html, 'og:url'), null)
 })
 
+test('a contest link carries its title, blurb, own image and address; a draft or a hidden one looks like any page', async () => {
+  const { addProblem, createContest, setContestHidden, setContestState, updateContest } = await import('../server/src/contests/store.js')
+  const live = createContest({ slug: 'bred-preview', title: '/b/ — тестовый контест' })
+  assert.ok(live)
+  updateContest(live.id, { blurb: 'Семь мемных задач.' })
+  addProblem(live.id, { title: 'ГЕТ' })
+  setContestState(live.id, 'live')
+  const { html } = await page('/a/bred-preview')
+  assert.equal(meta(html, 'og:title'), '/b/ — тестовый контест · Colloq')
+  assert.equal(meta(html, 'og:description'), 'Семь мемных задач.')
+  assert.match(meta(html, 'og:image') ?? '', new RegExp(`^${origin}/og/contests/bred-preview\\.png\\?v=[A-Za-z0-9_-]{10}$`))
+  assert.equal(meta(html, 'og:url'), `${origin}/a/bred-preview`)
+  assert.match(html, /<title>\/b\/ — тестовый контест · Colloq<\/title>/)
+  // A problem and the tabs share the card.
+  for (const tail of ['/a', '/leaderboard', '/leaderboard/screen', '/submissions', '/questions']) {
+    assert.equal(meta((await page(`/a/bred-preview${tail}`)).html, 'og:image'), meta(html, 'og:image'), tail)
+  }
+  // Without a blurb the description says what a contest is.
+  updateContest(live.id, { blurb: '' })
+  assert.match(meta((await page('/a/bred-preview')).html, 'og:description') ?? '', /^Контест в Colloq/)
+
+  // Taken off publication: every participant door answers as for a missing contest, the card too.
+  setContestHidden(live.id, Date.now())
+  const hidden = (await page('/a/bred-preview')).html
+  assert.equal(hidden.includes('тестовый контест'), false, 'a hidden contest must not show through the card')
+  assert.equal(meta(hidden, 'og:url'), null)
+  setContestHidden(live.id, null)
+
+  const draft = createContest({ slug: 'secret-contest', title: 'Секретный контест' })
+  assert.ok(draft)
+  const unseen = (await page('/a/secret-contest')).html
+  assert.equal(unseen.includes('Секретный контест'), false, 'a draft must not show through the card')
+  assert.equal(meta(unseen, 'og:url'), null)
+})
+
 test('the competitions list and a course have cards of their own', async () => {
   const list = (await page('/k')).html
   assert.match(meta(list, 'og:image') ?? '', new RegExp(`^${origin}/og/competitions\\.png\\?v=`))

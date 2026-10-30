@@ -105,3 +105,28 @@ test('competition, course and competitions-list cards are 1200×630 PNGs, served
   assert.equal((await fetch(`${base}/og/competitions.png`)).status, 200)
   assert.equal((await fetch(`${base}/og/courses/nothing-here.png`)).status, 404)
 })
+
+test('a contest card is a 1200×630 PNG, served while the contest is shown and not found otherwise', async () => {
+  const og = await import('../server/src/og-card.js')
+  const where = { host: 'vsos.colloq.ru', language: 'ru' as const, timeZone: 'Europe/Moscow' }
+  for (const phase of ['live', 'upcoming', 'finished'] as const) {
+    const png = await og.contestCardPng({ ...where, title: 'Олимпиада по очень длинному названию контеста', blurb: 'Описание. '.repeat(40), phase, startsAt: Date.now() + 3_600_000, endsAt: Date.now() + 7_200_000, upsolving: phase === 'finished', rules: 'icpc', problems: 7, entrants: 31, languages: ['python3', 'cpp20', 'c17'] })
+    assert.deepEqual(pngSize(png), { width: og.CARD_WIDTH, height: og.CARD_HEIGHT }, phase)
+  }
+  const english = await og.contestCardPng({ ...where, language: 'en', title: 'Week 3', blurb: '', phase: 'live', startsAt: null, endsAt: null, upsolving: false, rules: 'ioi', problems: 0, entrants: 0, languages: [] })
+  assert.deepEqual(pngSize(english), { width: og.CARD_WIDTH, height: og.CARD_HEIGHT })
+
+  const { createContest, setContestHidden, setContestState } = await import('../server/src/contests/store.js')
+  const made = createContest({ slug: 'contest-card-route', title: 'Маршрут карточки контеста' })
+  assert.ok(made)
+  assert.equal((await fetch(`${base}/og/contests/contest-card-route.png`)).status, 404, 'a draft has no card')
+  setContestState(made.id, 'live')
+  const served = await fetch(`${base}/og/contests/contest-card-route.png`)
+  assert.equal(served.status, 200)
+  assert.equal(served.headers.get('content-type'), 'image/png')
+  assert.match(served.headers.get('cache-control') ?? '', /max-age=3600/)
+  assert.deepEqual(pngSize(Buffer.from(await served.arrayBuffer())), { width: 1200, height: 630 })
+  setContestHidden(made.id, Date.now())
+  assert.equal((await fetch(`${base}/og/contests/contest-card-route.png`)).status, 404, 'a contest taken off publication has no card')
+  assert.equal((await fetch(`${base}/og/contests/no-such-contest.png`)).status, 404)
+})

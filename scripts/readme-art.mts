@@ -1,7 +1,8 @@
 /**
- * README animations: six scenes in .github/assets/readme, each in two
+ * README animations: seven scenes in .github/assets/readme, each in two
  * languages and in a light and a dark variant (README picks them through
- * <picture>; the competitions scene is shown on the landing page only).
+ * <picture>; the competitions and contests scenes are shown on the landing
+ * page only).
  *
  *   make readme-art
  *   node --import tsx scripts/readme-art.mts [directory...]
@@ -14,7 +15,7 @@
  * ConsoleView.svelte); where a scene departs from the brief, its header says
  * so. The scenes are independent of each other: each has its own helpers
  * inside its own function, so editing one does not touch the others. A run
- * writes all twenty-four files into both directories and fails if a file has
+ * writes all twenty-eight files into both directories and fails if a file has
  * grown to 40 KB or something has appeared in it that <img> will not show.
  *
  * Two languages. Each scene has its own TEXT dictionary at the top: en and ru,
@@ -3879,6 +3880,527 @@ function competitionsArt(): Scene {
   return competitions
 }
 
+// ====================================================================== contests
+
+/*
+ * Contests scene: "A verdict test by test, a place on the board" —
+ * contests-{light,dark}.svg, 13 s loop, one geometry with swapped tokens.
+ *
+ * Anna's first solution to problem C ran out of time on test 9 (#97). Under
+ * the editor, in "Submissions for C" (ProblemSubmissions.svelte, the desktop
+ * block: the number, VerdictBadge, submissionHead, the clock while the judge
+ * has it, usageWords once judged), her new submission #114 lands on top,
+ * waits in the queue and is judged test by test, "test N of 22" with the
+ * three-colour bar under the row, until it is accepted. Her row of the ICPC
+ * board (StandingsTable.svelte, the desktop table; icpcCell in
+ * contest-words.ts) follows it: C reads "−1", then "…" over "−1" while queued
+ * and "…" over the running test (the viewer's own row only), then "+1" over
+ * "1:42"; solved goes 3 → 4 and the penalty 143 → 265 by computeStandings
+ * (the minutes to the accepted submission plus 20 for the rejected attempt
+ * before it), and the row climbs from 4th place to 2nd. The contest started
+ * at 10:00, so the clock 11:42 in the list is 1:42 on the board.
+ *
+ * Departures, on purpose: the submissions block (the problem's page) and the
+ * board (the Leaderboard tab) are two places in the product, drawn here one
+ * above the other; the board stops after five rows and leaves out the totals
+ * row, the legend and the All / Near me switch; the new row slides in, and
+ * the board's row climbs a moment after its numbers change, where the product
+ * redraws both at once; the place numbers stay in their column while the rows
+ * move past them (each end of the move is the real table); the sizes are the
+ * scene's own, both blocks across the card and the type a step smaller. The
+ * contest has five problems, so the board shows every column a real one
+ * would; a longer contest scrolls sideways there.
+ */
+function contestsArt(): Scene {
+  // ---------------------------------------------------------------- strings ----
+
+  /**
+   * The visible strings per language, the locale key next to them. The
+   * handles, numbers and times are data, not interface: the same board in
+   * both languages, since people join a contest under a Telegram @handle or
+   * an email (shared/competitions.ts · entrantHandle).
+   *
+   * `overLimit` and `usage` are usageWords for the run killed at the 1 s
+   * limit and for the accepted one, in the reader's decimal notation.
+   */
+  const TEXT = {
+    en: {
+      title: 'Contests: a verdict test by test, a place on the board',
+      desc:
+        'Anna’s first solution to problem C exceeded the time limit on test 9. Her new submission #114 lands on top of Submissions for C, waits in the queue, is judged test by test, 1 to 22, and is accepted: 0.18 s, 12 MB. On the ICPC board her C cell turns from −1 to +1 at 1:42, solved goes from 3 to 4, the penalty from 143 to 265, and her row climbs from 4th place to 2nd.',
+      heading: 'SUBMISSIONS FOR C', // contests.p.problemSubmissions
+      all: 'all submissions', // contests.p.allSubmissions
+      queued: 'Queued', // contests.p.queued
+      running: (n: number) => `Judging · test ${n} of 22`, // contests.p.runningTestOf
+      accepted: 'Accepted · 22 tests', // contests.verdict.OK · contests.p.testsCount
+      timeLimit: 'Time limit exceeded · test 9', // contests.verdict.TL · contests.p.testN
+      overLimit: '> 1 s · 31 MB', // overLimitWords · contests.p.mbUnit
+      usage: '0.18 s · 12 MB', // contests.p.secondsUnit · contests.p.mbUnit
+      test: (n: number) => `test ${n}`, // contests.p.testN
+      // contests.p.colPlace / colEntrant / colSolved / colPenalty
+      cols: ['PLACE', 'PARTICIPANT', 'SOLVED', 'PENALTY'],
+      you: 'YOU', // contests.p.you
+      caps: 0.12,
+    },
+    ru: {
+      title: 'Контесты: вердикт тест за тестом, место в лидерборде',
+      desc:
+        'Первое решение Анны по задаче C превысило время на тесте 9. Новая посылка #114 встаёт наверх в «Посылках по задаче C», ждёт в очереди, проверяется тест за тестом, с 1-го по 22-й, и принимается: 0,18 с, 12 МБ. В таблице ICPC клетка C у Анны меняется с −1 на +1 (1:42), решённых становится 4 вместо 3, штраф — 265 вместо 143, и строка поднимается с 4-го места на 2-е.',
+      heading: 'ПОСЫЛКИ ПО ЗАДАЧЕ C',
+      all: 'все посылки',
+      queued: 'В очереди',
+      running: (n: number) => `Проверяется · тест ${n} из 22`,
+      accepted: 'Принято · 22 теста',
+      timeLimit: 'Превышено время · тест 9',
+      overLimit: '> 1 с · 31 МБ',
+      usage: '0,18 с · 12 МБ',
+      test: (n: number) => `тест ${n}`,
+      cols: ['МЕСТО', 'УЧАСТНИК', 'РЕШЕНО', 'ШТРАФ'],
+      you: 'ВЫ',
+      caps: 0.04,
+    },
+  } as const
+
+  /** The width of Anna's handle in the table (sans 700 13px, measured in the browser): the YOU chip stands after it. */
+  const NAME_W = 102.6
+
+  // ---------------------------------------------------------------- tokens ----
+
+  /*
+   * web/src/index.css. The contest pages put `.competition-ui` on their root,
+   * which sets both muted and faint to --competition-muted (the submission's
+   * number is faint). A board cell is the canvas with its tint laid over it as
+   * an inset shadow, so it stays the same colour on the viewer's raised row:
+   * the tints here are that mix, worked out.
+   */
+  const PALETTE = {
+    light: {
+      canvas: '#ffffff', raised: '#e7eef9', line: '#dce3ef', ink: '#101a33', muted: '#415069',
+      accent: '#0fa0d7', accentText: '#0a6e96', positive: '#0c7a64', danger: '#d4162f', warning: '#9b5a08',
+      // text-white on the solid green, text-white/80 under it
+      onPositive: 'fill:#ffffff', onPositiveSub: 'fill:#ffffff;fill-opacity:.8',
+      // bg-warning/10 under TL; positive/10 and danger/10 over the canvas in a cell
+      warningChip: 'fill:#9b5a08;fill-opacity:.1', solvedCell: '#e7f2f0', failedCell: '#fbe8ea',
+      // the YOU chip: bg-brand text-white
+      youChip: '#0f2d69', onYou: '#ffffff',
+    },
+    dark: {
+      canvas: '#060c1c', raised: '#0e1b3d', line: '#16244b', ink: '#e6e7e8', muted: '#b8c3d6',
+      accent: '#0fa0d7', accentText: '#0fa0d7', positive: '#3ec9a7', danger: '#f2495f', warning: '#f2a33c',
+      // dark:text-canvas on the solid green, dark:text-canvas/75 under it
+      onPositive: 'fill:#060c1c', onPositiveSub: 'fill:#060c1c;fill-opacity:.75',
+      // dark:bg-warning/20; positive/15 and danger/15 over the canvas
+      warningChip: 'fill:#f2a33c;fill-opacity:.2', solvedCell: '#0e2831', failedCell: '#291526',
+      // dark:bg-accent dark:text-accent-ink
+      youChip: '#0fa0d7', onYou: '#06203a',
+    },
+  } as const
+
+  const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif"
+  const MONO = "ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace"
+
+  // web/src/lib/competition-words.ts · AVATAR_TINTS / avatarTint, ported. The board's circle carries no letter.
+  const AVATAR_TINTS = ['#CFE3F7', '#F7D9E3', '#D8F0E4', '#F2D9B8', '#E3DDF7', '#F7E9C4']
+  function avatarTint(name: string): string {
+    let hash = 0
+    for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) % 100_000
+    return AVATAR_TINTS[hash % AVATAR_TINTS.length]
+  }
+
+  // ---------------------------------------------------------------- motion ----
+
+  const LOOP = 13000
+  const SEAM = LOOP - 400 // last 400 ms: back to the start frame
+  const DIP = SEAM + 200 // the board's rows are out of sight here and take their start places
+  const HOLD = 10500 // a moment inside the resolved hold: the static frame
+  const EASE = {
+    out: 'cubic-bezier(.23,1,.32,1)',
+    io: 'cubic-bezier(.77,0,.175,1)',
+    lin: 'linear',
+    step: 'step-end',
+  } as const
+  type Ease = keyof typeof EASE
+
+  const at = (ms: number): string => `${+((ms / LOOP) * 100).toFixed(2)}%`
+  const r5 = (n: number): number => Math.round(n * 2) / 2
+
+  type Stop = [ms: number, decl: string, ease?: Ease]
+  type Change = [ms: number, decl: string, dur: number, ease?: Ease]
+
+  const IDENTITY = new Set(['', 'none', 'scale(1)', 'translateY(0)', 'translateX(0)'])
+
+  class Motion {
+    private bodies = new Map<string, string>()
+    private out: string[] = []
+
+    /** Raw stops → class name. Identical keyframes share one rule. */
+    stops(stops: Stop[], base: Ease = 'out'): string {
+      const groups = new Map<string, string[]>()
+      for (let i = 0; i < stops.length; i++) {
+        const [ms, decl, ease] = stops[i]
+        const next = stops[i + 1]
+        if (next && next[0] === ms && !ease) continue
+        const key = `${decl}${ease && ease !== base ? `;animation-timing-function:${EASE[ease]}` : ''}`
+        const list = groups.get(key) ?? []
+        if (!list.includes(at(ms))) list.push(at(ms))
+        groups.set(key, list)
+      }
+      const body = [...groups].map(([key, list]) => `${list.join(',')}{${key}}`).join('')
+      let name = this.bodies.get(body)
+      if (!name) {
+        name = `k${this.bodies.size}`
+        this.bodies.set(body, name)
+        this.out.push(`@keyframes ${name}{${body}}.${name}{animation-name:${name}}`)
+      }
+      return `a ${name}`
+    }
+
+    /**
+     * A value track: start value, then timed changes. At the end the value
+     * goes back to the start: over the last 400 ms (`seam`), or, for the
+     * board's rows (`dip`), in one step while their group is out of sight.
+     */
+    track(v0: string, changes: Change[], back: Ease | 'dip' = 'out'): { cls: string; end: string } {
+      const stops: Stop[] = [[0, v0]]
+      let cur = v0
+      let end = v0
+      for (const [ms, v, dur, ease = 'out'] of changes) {
+        if (ms < 400) throw new Error(`first beat before 0.4 s: ${ms}`)
+        if (ms + dur > SEAM) throw new Error(`beat runs into the seam: ${ms}`)
+        stops.push([ms, cur, ease])
+        stops.push([ms + dur, v])
+        cur = v
+        if (ms + dur <= HOLD) end = v
+      }
+      if (cur !== v0) {
+        if (back === 'dip') {
+          stops.push([DIP, cur, 'step'])
+          stops.push([DIP + 10, v0])
+        } else {
+          stops.push([SEAM, cur, back])
+        }
+      }
+      stops.push([LOOP, v0])
+      return { cls: this.stops(stops), end }
+    }
+
+    css(): string {
+      return this.out.join('')
+    }
+  }
+
+  const st = (o: number, t = 'none'): string => `opacity:${o};transform:${t}`
+
+  /** Attributes for an element whose opacity (and maybe transform) is animated. */
+  function attrs(m: Motion, v0: string, changes: Change[], extraCls = '', back: Ease | 'dip' = 'out'): string {
+    const { cls, end } = m.track(v0, changes, back)
+    const o = /opacity:([\d.]+)/.exec(end)
+    const t = /transform:([^;]+)/.exec(end)
+    if (t && !IDENTITY.has(t[1].trim())) throw new Error(`static frame would keep a transform: ${end}`)
+    const op = o && o[1] !== '1' ? ` opacity="${o[1]}"` : ''
+    return `class="${cls}${extraCls ? ' ' + extraCls : ''}"${op}`
+  }
+
+  /**
+   * Fade helper: 0/1 visibility changes, 160 ms by default. Inside the new
+   * row, which itself fades out at the seam (`back = 'step'`), children keep
+   * their last state and reset on the invisible loop boundary instead of
+   * fading; on the board (`back = 'dip'`) they reset while it is out of sight.
+   */
+  let back: Ease | 'dip' = 'out'
+  function fade(m: Motion, v0: 0 | 1, changes: [ms: number, v: 0 | 1, dur?: number][], extraCls = ''): string {
+    return attrs(m, `opacity:${v0}`, changes.map(([ms, v, dur = 160]) => [ms, `opacity:${v}`, dur, 'out'] as Change), extraCls, back)
+  }
+
+  // ------------------------------------------------------------------ text ----
+
+  const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  /** Capitals tracking: set by the scene's language (see TEXT). */
+  let CAPS_TRACK: number = TEXT.en.caps
+
+  /** Width of a mono run: chars × 0.6 × size, plus the caps tracking. */
+  const monoW = (s: string, size: number, caps: boolean): number =>
+    [...s].length * 0.6 * size + (caps ? ([...s].length - 1) * CAPS_TRACK * size : 0)
+
+  /** Mono line with an explicit textLength, so every glyph lands on the grid. */
+  function monoText(x: number, y: number, s: string, o: { cls?: string; caps?: boolean; size?: number; end?: boolean } = {}): string {
+    const size = o.size ?? (o.caps ? 11 : 12)
+    const w = monoW(s, size, !!o.caps)
+    const base = o.caps ? 'L' : `c${size}`
+    const left = o.end ? x - w : x
+    return `<text x="${r5(left)}" y="${y}" class="${base}${o.cls ? ' ' + o.cls : ''}" textLength="${+w.toFixed(2)}">${esc(s)}</text>`
+  }
+
+  /** A mono run centred on `cx` (a badge's code, a board cell's two lines). */
+  const monoMid = (cx: number, y: number, s: string, size: number, cls: string): string =>
+    monoText(cx - monoW(s, size, false) / 2, y, s, { size, cls })
+
+  const sans = (x: number, y: number, inner: string, cls = 'u'): string => `<text x="${r5(x)}" y="${y}" class="${cls}">${inner}</text>`
+
+  /**
+   * The verdict box (VerdictBadge.svelte): one width whatever the code, so a
+   * column of them reads as a column; the code centred, mono bold. Accepted is
+   * the one solid box, TL a warning tint, «…» an outline in the live accent
+   * while the judge has it (BADGE_PAINT).
+   */
+  function badge(x: number, y: number, code: string, tone: 'OK' | 'TL' | 'run'): string {
+    const ground =
+      tone === 'run'
+        ? `<rect x="${x + 0.5}" y="${y + 0.5}" width="43" height="21" fill="none" class="oA"/>`
+        : `<rect x="${x}" y="${y}" width="44" height="22" class="${tone === 'OK' ? 'bP' : 'xW'}"/>`
+    return ground + monoMid(x + 22, y + 15.5, code, 12, `w7 ${tone === 'OK' ? 'tO' : tone === 'TL' ? 'tW' : 'tA'}`)
+  }
+
+  // ----------------------------------------------------------------- scene ----
+
+  function contests(theme: Theme, lang: Lang): string {
+    const P = PALETTE[theme]
+    const S = TEXT[lang]
+    CAPS_TRACK = S.caps
+    const m = new Motion()
+    back = 'out'
+    const W = 880
+    const H = 380
+
+    // Beats (ms)
+    const ARRIVE = 700 // #114 lands on top of the list, in the queue
+    const QUEUED = 1000 // the board has it too: C is «…» over «−1»
+    const RUN = 2200 // the judge takes it: test 1 of 22
+    const TEST = 160 // one test every 160 ms: test 22 at RUN + 21 × TEST
+    const DONE = 5700 // accepted: OK, «Accepted · 22 tests», what the run took
+    const BOARD = 5800 // the board reloads: C is +1 at 1:42, solved 4, penalty 265
+    const MOVE = 6600 // … and the row climbs from 4th place to 2nd
+    const testAt = (n: number): number => RUN + (n - 1) * TEST
+
+    const defs: string[] = []
+    const body: string[] = []
+    const push = (s: string): void => void body.push(s)
+
+    const X0 = 20
+    const X1 = 860
+    const BADGE_X = X0 + 42 // after the number (w-[30px]) and the gap
+    const HEAD_X = BADGE_X + 56 // after the box and the gap
+    const RH = 42 // a row
+    const EX = 12 // the bar under a running row: gap-2 and h-1
+    const LIST = 36 // under the heading's rule
+
+    /*
+     * The running test, said twice: «test N of 22» beside the badge and «test N»
+     * in the board's cell. Each is a column of 22 lines behind a one-line
+     * window, and both columns step together by the same keyframes.
+     */
+    const LH = 20
+    const stepping = (() => {
+      const stops: Stop[] = [[0, 'transform:translateY(0)']]
+      for (let n = 2; n <= 22; n++) stops.push([testAt(n), `transform:translateY(-${(n - 1) * LH}px)`])
+      stops.push([LOOP, `transform:translateY(-${21 * LH}px)`])
+      return `${m.stops(stops, 'step')} sE`
+    })()
+
+    // ---- card
+    push(`<rect x=".5" y=".5" width="879" height="${H - 1}" rx="12" class="bc sl"/>`)
+
+    // ---- Submissions for C
+    push(monoText(X0, 26, S.heading, { caps: true, cls: 'tm' }))
+    push(sans(X1, 26, esc(S.all), 'u12 tA e'))
+    push(`<rect x="${X0}" y="35" width="${X1 - X0}" height="1" class="bi"/>`)
+
+    // the older submission: out of time on test 9; it makes room for the new one
+    {
+      const y = LIST + RH
+      const g: string[] = []
+      g.push(`<rect x="${X0}" y="${y}" width="${X1 - X0}" height="1" ${fade(m, 0, [[ARRIVE, 1, 200]], 'bl')}/>`)
+      g.push(monoText(X0, y + 25, '#97', { cls: 'tm' }))
+      g.push(badge(BADGE_X, y + 10, 'TL', 'TL'))
+      g.push(sans(HEAD_X, y + 26, esc(S.timeLimit), 'u ti'))
+      g.push(monoText(X1, y + 25, S.overLimit, { cls: 'tm', end: true }))
+      g.push(`<rect x="${X0}" y="${y + RH - 1}" width="${X1 - X0}" height="1" class="bl"/>`)
+      push(
+        `<g ${attrs(m, st(1, `translateY(-${RH}px)`), [
+          [ARRIVE, st(1, 'translateY(0)'), 320, 'io'],
+          [RUN, st(1, `translateY(${EX}px)`), 280, 'io'],
+          [DONE, st(1, 'translateY(0)'), 280, 'io'],
+        ], '', 'io')}>${g.join('')}</g>`,
+      )
+    }
+
+    // the new submission: queued → judged test by test → accepted; leaves as a whole at the seam
+    {
+      const y = LIST
+      const g: string[] = []
+      const seam = back
+      back = 'step'
+      g.push(monoText(X0, y + 25, '#114', { cls: 'tm' }))
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 100]])}>${badge(BADGE_X, y + 10, '…', 'run')}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 60, 1, 160]])}>${badge(BADGE_X, y + 10, 'OK', 'OK')}</g>`)
+      g.push(`<g ${fade(m, 1, [[RUN, 0, 100]])}>${sans(HEAD_X, y + 26, esc(S.queued), 'u ti')}</g>`)
+      {
+        defs.push(`<clipPath id="ch"><rect x="${HEAD_X}" y="${y + 11}" width="400" height="${LH}"/></clipPath>`)
+        const lines = Array.from({ length: 22 }, (_, i) => sans(HEAD_X, y + 26 + i * LH, esc(S.running(i + 1)), 'u ti')).join('')
+        g.push(`<g ${fade(m, 0, [[RUN, 1, 120], [DONE, 0, 100]])}><g clip-path="url(#ch)"><g class="${stepping}">${lines}</g></g></g>`)
+      }
+      g.push(`<g ${fade(m, 0, [[DONE + 80, 1, 200]])}>${sans(HEAD_X, y + 26, esc(S.accepted), 'u ti')}</g>`)
+
+      // the right column: the clock while the judge has it, then what the run took
+      g.push(`<g ${fade(m, 1, [[DONE, 0, 100]])}>${monoText(X1, y + 25, '11:42', { cls: 'tm', end: true })}</g>`)
+      g.push(`<g ${fade(m, 0, [[DONE + 80, 1, 200]])}>${monoText(X1, y + 25, S.usage, { cls: 'tm', end: true })}</g>`)
+
+      // under a running row: the tests passed in green, the running one in the accent, the rest grey
+      {
+        const bx = BADGE_X // pl-[42px]: the bar starts under the badge
+        const by = y + 40
+        const unit = (X1 - bx - 6) / 22 // flex-grow by tests, less two 3 px gaps: 36
+        const green: Stop[] = [[0, 'transform:scaleX(0)']]
+        const live: Stop[] = [[0, 'transform:translateX(0)']]
+        for (let n = 2; n <= 22; n++) {
+          green.push([testAt(n), `transform:scaleX(${+((n - 1) / 21).toFixed(4)})`])
+          live.push([testAt(n), `transform:translateX(${(n - 1) * unit + 3}px)`])
+        }
+        green.push([LOOP, 'transform:scaleX(1)'])
+        live.push([LOOP, `transform:translateX(${21 * unit + 3}px)`])
+        g.push(
+          `<g ${fade(m, 0, [[RUN, 1, 140], [DONE, 0, 140]])}>` +
+            `<rect x="${bx}" y="${by}" width="${X1 - bx}" height="4" class="bl"/>` +
+            `<rect x="${bx}" y="${by}" width="${21 * unit}" height="4" class="bP ${m.stops(green, 'step')} sE pl"/>` +
+            // a canvas stroke under the running test's fill keeps the 3 px gap on either side of it
+            `<rect x="${bx}" y="${by}" width="${unit}" height="4" class="bA gp ${m.stops(live, 'step')} sE"/>` +
+            `</g>`,
+        )
+      }
+      back = seam
+      push(`<g ${attrs(m, st(0, 'translateY(-6px)'), [[ARRIVE, st(1), 320]])}>${g.join('')}</g>`)
+    }
+
+    // ---- the board (the desktop ICPC table)
+    const HB = 166 // the header's baseline
+    const COL_P = X0 + 60 // the participant column
+    const COL_A = 332 // the first problem column
+    const CW = 72 // a problem column; its box is 58 × 30
+    const SOLVED_R = 768 // the solved column's right edge; the penalty's is X1
+    push(monoText(X0, HB, S.cols[0], { caps: true, cls: 'tm' }))
+    push(monoText(COL_P, HB, S.cols[1], { caps: true, cls: 'tm' }))
+    ;['A', 'B', 'C', 'D', 'E'].forEach((letter, i) => push(monoMid(COL_A + i * CW + CW / 2, HB, letter, 13, 'w7 ti')))
+    push(monoText(SOLVED_R, HB, S.cols[2], { caps: true, cls: 'tm', end: true }))
+    push(monoText(X1, HB, S.cols[3], { caps: true, cls: 'tm', end: true }))
+    push(`<rect x="${X0}" y="${HB + 8}" width="${X1 - X0}" height="2" class="bi"/>`)
+    const ROWS = HB + 10
+    const BRH = 38
+    for (let i = 1; i <= 5; i++) push(`<rect x="${X0}" y="${ROWS + i * BRH - 1}" width="${X1 - X0}" height="1" class="bl"/>`)
+
+    /*
+     * A cell (StandingsTable.svelte · BOX, MAIN, SUB; contest-words.ts ·
+     * icpcCell): the first solve of a problem solid green, solved a green tint
+     * with the attempts over the minutes from the start, failed a red tint
+     * with the misses, being judged a dashed accent box.
+     */
+    type Tone = 'first' | 'solved' | 'failed' | 'pending'
+    type Cell = [tone: Tone, main: string, sub?: string] | null
+    const ok = (sub: string, misses = 0, first = false): Cell => [first ? 'first' : 'solved', misses ? `+${misses}` : '+', sub]
+    const no = (misses: number): Cell => ['failed', `−${misses}`]
+    const MAIN: Record<Tone, string> = { first: 'tO', solved: 'tP', failed: 'td', pending: 'tA' }
+    const SUB: Record<Tone, string> = { first: 'tOs', solved: 'tm', failed: 'tm', pending: 'tA' }
+    const box = (x: number, y: number, tone: Tone): string =>
+      tone === 'pending'
+        ? `<rect x="${x + 7.5}" y="${y + 4.5}" width="57" height="29" stroke-dasharray="3 2" class="bc oA"/>`
+        : `<rect x="${x + 7}" y="${y + 4}" width="58" height="30" class="${tone === 'first' ? 'bP' : tone === 'solved' ? 'xS' : 'xF'}"/>`
+    // the main line sits higher when there is a line under it
+    const main = (x: number, y: number, s: string, tone: Tone, alone: boolean): string =>
+      monoMid(x + CW / 2, y + (alone ? 23.5 : 17.5), s, 13, `w7 ${MAIN[tone]}`)
+    const sub = (x: number, y: number, s: string, tone: Tone): string => monoMid(x + CW / 2, y + 30, s, 11, SUB[tone])
+    const cell = (x: number, y: number, c: Cell): string =>
+      c ? box(x, y, c[0]) + main(x, y, c[1], c[0], c[2] === undefined) + (c[2] === undefined ? '' : sub(x, y, c[2], c[0])) : ''
+
+    /*
+     * The final order. Anna (index 1) starts two rows lower, the two she
+     * passes one row higher. The penalties follow the rule: @marfa_belova
+     * 9 + 31 + (52 + 20) + 77 = 189; Anna 14 + (41 + 20) + 68 = 143, then
+     * + (102 + 20) = 265; @t_aliev 12 + 24 + 47 = 83; @d_orlov 11 + 38 + 57 =
+     * 106; @o_petrov 21 + 94 = 115. The first solve of each column is its
+     * earliest time.
+     */
+    const people: { name: string; cells: Cell[]; solved: string; penalty: string; from: number }[] = [
+      { name: '@marfa_belova', cells: [ok('0:09', 0, true), ok('0:31'), ok('0:52', 1, true), ok('1:17'), no(1)], solved: '4', penalty: '189', from: 0 },
+      { name: '@annasmirnova', cells: [ok('0:14'), ok('0:41', 1), null, ok('1:08'), null], solved: '4', penalty: '265', from: 2 },
+      { name: '@t_aliev', cells: [ok('0:12'), ok('0:24', 0, true), no(2), ok('0:47', 0, true), null], solved: '3', penalty: '83', from: -1 },
+      { name: '@d_orlov', cells: [ok('0:11'), ok('0:38'), null, no(1), ok('0:57', 0, true)], solved: '3', penalty: '106', from: -1 },
+      { name: '@o_petrov', cells: [ok('0:21'), no(3), null, ok('1:34'), null], solved: '2', penalty: '115', from: 0 },
+    ]
+    const rows: string[] = []
+    back = 'dip'
+    people.forEach((p, i) => {
+      const y = ROWS + i * BRH
+      const you = i === 1
+      const g: string[] = []
+      if (you) g.push(`<rect x="${X0}" y="${y}" width="${X1 - X0}" height="${BRH - 1}" class="br"/>`)
+      g.push(`<circle cx="${COL_P + 10}" cy="${y + 19}" r="10" fill="${avatarTint(p.name)}"/>`)
+      g.push(sans(COL_P + 28, y + 23.5, esc(p.name), 'u13 w7 ti'))
+      p.cells.forEach((c, k) => g.push(cell(COL_A + k * CW, y, c)))
+      const numbers = (solved: string, penalty: string): string =>
+        monoText(SOLVED_R, y + 24.5, solved, { size: 15, cls: 'w7 ti', end: true }) + monoText(X1, y + 23.5, penalty, { cls: 'tm', end: true })
+      if (you) {
+        const cx = r5(COL_P + 28 + NAME_W + 10)
+        const cw = r5(7 + monoW(S.you, 11, true) + 7)
+        g.push(`<rect x="${cx}" y="${y + 10.5}" width="${cw}" height="17" class="bY"/>` + monoText(cx + 7, y + 23, S.you, { caps: true, cls: 'tY' }))
+        // C: −1; «…» over −1 in the queue; «…» over the running test; +1 at 1:42
+        const c = COL_A + 2 * CW
+        g.push(`<g ${fade(m, 1, [[QUEUED, 0, 120]])}>${cell(c, y, no(1))}</g>`)
+        g.push(`<g ${fade(m, 0, [[QUEUED, 1, 160], [BOARD, 0, 120]])}>${box(c, y, 'pending')}${main(c, y, '…', 'pending', false)}</g>`)
+        g.push(`<g ${fade(m, 0, [[QUEUED, 1, 160], [RUN, 0, 100]])}>${sub(c, y, '−1', 'pending')}</g>`)
+        defs.push(`<clipPath id="ct"><rect x="${c + 8}" y="${y + 20}" width="56" height="13.5"/></clipPath>`)
+        const lines = Array.from({ length: 22 }, (_, k) => sub(c, y + k * LH, S.test(k + 1), 'pending')).join('')
+        g.push(`<g ${fade(m, 0, [[RUN, 1, 100], [BOARD, 0, 120]])}><g clip-path="url(#ct)"><g class="${stepping}">${lines}</g></g></g>`)
+        g.push(`<g ${fade(m, 0, [[BOARD, 1, 220]])}>${cell(c, y, ok('1:42', 1))}</g>`)
+        // solved and the penalty: 3 and 143 before, 4 and 265 after
+        g.push(`<g ${fade(m, 1, [[BOARD, 0, 140]])}>${numbers('3', '143')}</g>`)
+        g.push(`<g ${fade(m, 0, [[BOARD + 120, 1, 220]])}>${numbers(p.solved, p.penalty)}</g>`)
+      } else {
+        g.push(numbers(p.solved, p.penalty))
+      }
+      const inner = g.join('')
+      const row = p.from === 0
+        ? inner
+        : `<g ${attrs(m, st(1, `translateY(${p.from * BRH}px)`), [[MOVE, st(1, 'translateY(0)'), 560, 'io']], '', 'dip')}>${inner}</g>`
+      if (you) rows.push(row)
+      else rows.unshift(row)
+    })
+    back = 'out'
+    // the board's rows step out of sight for a moment at the seam and come back in their start places
+    const dip = m.stops([[0, 'opacity:1'], [SEAM, 'opacity:1'], [DIP, 'opacity:0'], [DIP + 30, 'opacity:0'], [LOOP, 'opacity:1']])
+    push(`<g class="${dip}">${rows.join('')}</g>`)
+    // the place column stays put: 1…5 down the table whichever row stands there
+    for (let i = 0; i < 5; i++) push(monoText(X0, ROWS + i * BRH + 24.5, String(i + 1), { size: 15, cls: 'w7 ti' }))
+
+    // ---- style
+    const css = [
+      `.u,.u12,.u13{font-family:${SANS}}`,
+      `.L,.c11,.c12,.c13,.c15{font-family:${MONO}}`,
+      `.u{font-size:14px}.u12{font-size:12px}.u13{font-size:13px}`,
+      `.c11{font-size:11px}.c12{font-size:12px}.c13{font-size:13px}.c15{font-size:15px}`,
+      `.L{font-size:11px;font-weight:700;text-transform:uppercase}`,
+      `.w7{font-weight:700}.e{text-anchor:end}`,
+      `.ti{fill:${P.ink}}.tm{fill:${P.muted}}.tA{fill:${P.accentText}}.tP{fill:${P.positive}}.td{fill:${P.danger}}.tW{fill:${P.warning}}`,
+      `.tO{${P.onPositive}}.tOs{${P.onPositiveSub}}.tY{fill:${P.onYou}}`,
+      `.bc{fill:${P.canvas}}.br{fill:${P.raised}}.bl{fill:${P.line}}.bi{fill:${P.ink}}.bA{fill:${P.accent}}.bP{fill:${P.positive}}.bY{fill:${P.youChip}}`,
+      `.xW{${P.warningChip}}.xS{fill:${P.solvedCell}}.xF{fill:${P.failedCell}}`,
+      `.sl{stroke:${P.line}}.oA{stroke:${P.accent}}.gp{stroke:${P.canvas};stroke-width:6px;paint-order:stroke}`,
+      `.a{animation:${LOOP / 1000}s ${EASE.out} infinite both}`,
+      `.pl{transform-box:fill-box;transform-origin:left}.sE{animation-timing-function:step-end}`,
+      m.css(),
+      `@media (prefers-reduced-motion:reduce){*{animation:none!important}}`,
+    ].join('')
+
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" lang="${lang}" role="img" aria-labelledby="contests-title contests-desc">` +
+      `<title id="contests-title">${esc(S.title)}</title><desc id="contests-desc">${esc(S.desc)}</desc>` +
+      `<style>${css}</style><defs>${defs.join('')}</defs>` +
+      body.join('') +
+      `</svg>`
+    )
+  }
+  return contests
+}
+
 // ====================================================================== main
 
 const SCENES: Record<string, () => Scene> = {
@@ -3888,6 +4410,7 @@ const SCENES: Record<string, () => Scene> = {
   lecture: lectureArt,
   oracle: oracleArt,
   competitions: competitionsArt,
+  contests: contestsArt,
 }
 
 /** What <img> on GitHub will not show or must not fetch: a script, a foreign file, a font, an embedded image. */
@@ -3903,7 +4426,7 @@ export function sceneFile(slug: string, lang: Lang, theme: Theme): string {
   return `${slug}${lang === 'en' ? '' : `-${lang}`}-${theme}.svg`
 }
 
-/** All twenty-four files: six scenes × two languages × two themes. */
+/** All twenty-eight files: seven scenes × two languages × two themes. */
 export function renderAll(): Map<string, string> {
   const out = new Map<string, string>()
   for (const [slug, make] of Object.entries(SCENES)) {

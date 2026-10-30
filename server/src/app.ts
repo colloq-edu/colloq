@@ -20,8 +20,8 @@ import zlib from 'node:zlib'
 import { preferredEncodings, type Encoding } from './http-encoding.js'
 import { precompressedStatic } from './precompressed-static.js'
 import { etagMatches, frontendPage } from './frontend-html.js'
-import { competitionCardOf, competitionsCardOf, courseCardOf, linkPreview } from './link-preview.js'
-import { competitionCardPng, competitionsCardPng, courseCardPng, roomCardPng } from './og-card.js'
+import { competitionCardOf, competitionsCardOf, contestCardOf, courseCardOf, linkPreview } from './link-preview.js'
+import { competitionCardPng, competitionsCardPng, contestCardPng, courseCardPng, roomCardPng } from './og-card.js'
 import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { currentStaff, sameOrigin, secureCookie, slideStaffCookie } from './admin/auth.js'
@@ -747,10 +747,10 @@ app.get('/og/rooms/:id.png', (req, res, next) => {
 })
 
 /*
- * The cards of the competitions list, a competition and a course — the same
- * drawing and the same hour as a room's, under an address that carries a
- * version (link-preview.ts). A draft competition and an unknown course are
- * not found, exactly as their pages are not.
+ * The cards of the competitions list, a competition, a contest and a course —
+ * the same drawing and the same hour as a room's, under an address that
+ * carries a version (link-preview.ts). A draft competition or contest and an
+ * unknown course are not found, exactly as their pages are not.
  */
 function sendCard(res: Response, next: NextFunction, png: Promise<Buffer>): void {
   png
@@ -772,6 +772,15 @@ app.get('/og/competitions/:slug.png', (req, res, next) => {
     return
   }
   sendCard(res, next, competitionCardPng(found.card))
+})
+
+app.get('/og/contests/:slug.png', (req, res, next) => {
+  const found = contestCardOf(req.params.slug, getInstanceLanguage())
+  if (!found) {
+    res.status(404).type('text/plain').send(tr('common.notFound'))
+    return
+  }
+  sendCard(res, next, contestCardPng(found.card))
 })
 
 app.get('/og/courses/:handle.png', (req, res, next) => {
