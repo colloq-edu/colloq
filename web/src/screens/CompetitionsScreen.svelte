@@ -36,6 +36,7 @@
   import DependenciesView from '@/components/competitions/DependenciesView.svelte'
   import BoardView from '@/components/competitions/BoardView.svelte'
   import CompetitionsList from '@/components/competitions/CompetitionsList.svelte'
+  import ContestsList from '@/components/contests/ContestsList.svelte'
   import Conditions from '@/components/competitions/Conditions.svelte'
   import JoinStep from '@/components/competitions/JoinStep.svelte'
   import KeyPanel from '@/components/competitions/KeyPanel.svelte'
@@ -47,6 +48,8 @@
   import { firstScreenReady } from '@/lib/boot'
   import { acceptsUploads, boardPlaces, clockStep, gpuCondition, standingsClosed } from '@/lib/competition-words'
   import { entrantApi, EntrantApiError } from '@/lib/entrantApi'
+  import { contestApi } from '@/lib/contestApi'
+  import type { EntrantContestRow } from '@shared/contests-entrant'
   import { COMPETITIONS_LANDING, type CompetitionRoute, type CompetitionView } from '@/lib/routes'
 
   interface Props {
@@ -81,6 +84,8 @@
   let now = $state(Date.now())
   let me = $state<EntrantMe | null>(null)
   let list = $state<EntrantCompetitionList | null>(null)
+  /** The contests on the same list (ContestsList): another door, the same person. */
+  let contests = $state<EntrantContestRow[]>([])
   let page = $state<EntrantCompetitionView | null>(null)
   let mine = $state<EntrantSubmissions | null>(null)
   let board = $state<EntrantLeaderboard | null>(null)
@@ -247,6 +252,21 @@
     }
   }
 
+  /*
+   * The contests section, from its own door, asked beside the competitions'.
+   * Quietly empty when it fails — a server that has no contests yet, or a
+   * blink — so the competitions above neither wait for it nor show its error.
+   */
+  async function loadContests(): Promise<void> {
+    const context = requestContext()
+    try {
+      const fresh = await contestApi.list()
+      if (currentContext(context)) contests = fresh.contests
+    } catch {
+      if (currentContext(context)) contests = []
+    }
+  }
+
   async function loadPage(slug: string): Promise<void> {
     const context = requestContext()
     try {
@@ -308,6 +328,7 @@
       board = null
       boardClosed = false
       list = null
+      contests = []
       final = false
       ready = false
       failure = null
@@ -329,6 +350,7 @@
     }
     if (slug === null) {
       void loadList()
+      void loadContests()
       return
     }
     void loadPage(slug)
@@ -693,6 +715,11 @@
             onopen={(slug) => onnavigate(`/k/${slug}/submissions`)}
             onjoin={startJoin}
           />
+          {#if contests.length > 0}
+            <div class="mt-12">
+              <ContestsList rows={contests} {now} onopen={onnavigate} />
+            </div>
+          {/if}
         </div>
         <aside class="w-full shrink-0 self-start border border-line bg-surface p-5 xl:w-[360px]">
           <KeyPanel {me} busy={signInBusy} refusal={signInRefusal} onsignin={signIn} onsignout={signOut} />

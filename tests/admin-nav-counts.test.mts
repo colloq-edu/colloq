@@ -20,9 +20,10 @@ test('the rail asks for the active tab’s count unless that tab’s list is on 
   const screen = read('web/src/screens/AdminScreen.svelte')
   assert.match(screen, /<AdminShell \{tab\} \{listShown\} \{navigate\}>/)
   const lists = /const LIST_PATHS = new Set\(\[([^\]]*)\]\)/.exec(screen)?.[1] ?? ''
-  for (const list of ['/admin', '/admin/courses', '/admin/competitions', '/admin/environments', '/admin/teachers']) {
+  for (const list of ['/admin', '/admin/courses', '/admin/competitions', '/admin/contests', '/admin/environments', '/admin/teachers']) {
     assert.ok(lists.includes(`'${list}'`), `${list} reports its own count`)
   }
   // A single competition is not its list.
   assert.ok(!lists.includes('/admin/competitions/'), 'a deep address counts as a list')
+  assert.ok(!lists.includes('/admin/contests/'), 'a single contest is not its list either')
 })

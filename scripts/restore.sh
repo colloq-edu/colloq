@@ -225,13 +225,13 @@ if [ -n "$FILES" ]; then
     found != "" { next }
     name == "workspace" || name ~ /^workspace\// { next }
     name == "data" || name == "kernel" || name == "environments" || name == "kernel/environments" { next }
-    name ~ /^data\/(competitions|dependencies|blobs|page-files)(\/|$)/ || name == "data/session-secret" || name == "data/setup-token" { next }
+    name ~ /^data\/(competitions|contests|dependencies|blobs|page-files)(\/|$)/ || name == "data/session-secret" || name == "data/setup-token" { next }
     name ~ /^(kernel\/)?environments\/[^\/]+\.txt$/ { next }
     { found = "an unexpected name: " $0 }
     END { print found }
   ')" || die "$FILES_NAME cannot be read as a tar.gz archive — the backup is broken or incomplete."
   [ -z "$problem" ] || die "refusing $FILES_NAME: it holds $problem.
-  A class backup holds only workspace/, data/competitions, data/dependencies,
+  A class backup holds only workspace/, data/competitions, data/contests, data/dependencies,
   data/blobs, data/page-files, the two keys and environment lists."
 fi
 

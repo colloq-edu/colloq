@@ -52,7 +52,7 @@ ENV PYTHONUNBUFFERED=1 \
 # already satisfied" to every line of the base and downloads nothing. Only what
 # the parent lacks costs minutes, and that is what inheritance is for.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl libgomp1 \
+ && apt-get install -y --no-install-recommends curl libgomp1 g++ \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt

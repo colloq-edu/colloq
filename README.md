@@ -254,6 +254,40 @@ it or kill the run in progress.
 
 Guide: [competitions](https://colloq.cc/docs/en/competitions.html)
 
+## Contests
+
+A contest is a set of algorithmic problems with tests, as on Yandex.Contest or
+Codeforces: problems A, B, C… with a statement, examples and limits; an entrant
+sends **Python, C or C++** source from an editor on the problem's page (or a file),
+and a verdict comes back in seconds — **OK, WA, TL, ML, RE, OL, CE** with the number
+of the first test that failed. It lives under **Contests** in the admin panel, and
+the class opens it at `/a/<name>`; the same entry key as competitions brings an
+entrant back, and the `/k` list shows both.
+
+What you set up per problem: a Markdown statement with formulas, time and memory
+limits, the tests (an archive in the usual layouts — `01`/`01.a`, `1.in`/`1.out`,
+`input`/`output` — or typed by hand; the ones marked as examples are shown under
+the statement), how answers are compared (word by word, line by line, numbers with
+an epsilon, or your own Python `check(input, output, answer)`), and a reference
+solution. The reference is judged like a submission and can **write the answers**
+for inputs that have none; a contest opens only when every reference passes.
+
+How a submission is judged. One throwaway container without network per
+submission runs all its tests: the program runs as an unprivileged user under a
+root harness, the answers reach the harness through its stdin into memory the
+program cannot read, and every test has its own CPU time, memory and output limit.
+Verdicts and live progress («test 7 of 22») stream back as it goes.
+
+Rules and the board. **ICPC** — solved problems, then penalty minutes (20 per
+rejected attempt by default, compilation errors free), with an optional **freeze**
+for the last minutes that the teacher reveals after the end; **IOI** — points for
+tests or groups of tests, the best submission per problem counts. Places are always
+distinct. The board has a projector view, the teacher's console shows every
+test's output (hidden tests included), answers questions to one person or to
+everyone, rejudges after a test fix, and exports the board as CSV.
+
+Guide: [contests](https://colloq.cc/docs/en/contests.html)
+
 ## Quick start
 
 ### Install with pip

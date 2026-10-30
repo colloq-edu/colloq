@@ -22,6 +22,7 @@
     handoffLanding,
     isAdminPath,
     readCompetitionRoute,
+    readContestRoute,
     readCourseId,
     readPublicRoute,
     readRoomRoute,
@@ -83,6 +84,11 @@
    * localStorage.
    */
   const competition = $derived(readCompetitionRoute(path))
+  /*
+   * Contests (`/a/<slug>…`): the same participant and cookie as `/k`, at an
+   * address of their own (docs/architecture/contests.md · §0).
+   */
+  const contest = $derived(readContestRoute(path))
 
   /*
    * The admin panel arrives on demand, for the same reason the notebook's
@@ -139,6 +145,21 @@
   const competitions = () =>
     (competitionsChunk ??= loadLocalizedScreen(
       () => import('@/screens/CompetitionsScreen.svelte').then((m) => m.default),
+      'competitions',
+      language.current,
+    ))
+
+  /*
+   * And contests, in a chunk of their own beside the competitions one, with
+   * the same dictionary (the contests' words travel in the competitions
+   * catalog): the editor and its C++ grammar come with this page and with no
+   * other — `/k` is opened from a phone a minute before a deadline, and the
+   * code editor is not needed there by a single line.
+   */
+  let contestChunk: Promise<typeof import('@/screens/ContestScreen.svelte').default> | null = null
+  const contestScreen = () =>
+    (contestChunk ??= loadLocalizedScreen(
+      () => import('@/screens/ContestScreen.svelte').then((m) => m.default),
       'competitions',
       language.current,
     ))
@@ -608,6 +629,18 @@
     <Splash />
   {:then Competitions}
     <Competitions route={competition} onnavigate={(next) => navigate(next)} />
+  {/await}
+{:else if contest}
+  <!--
+    A contest's pages, as the competitions' ones: before the panel and the
+    room, since `/a/…` overlaps with neither, and without a key — the tabs and
+    the letters of one contest are one page, and rebuilding it would drop the
+    draft in the editor on every click.
+  -->
+  {#await contestScreen()}
+    <Splash />
+  {:then ContestPage}
+    <ContestPage route={contest} onnavigate={(next) => navigate(next)} />
   {/await}
 {:else if isAdmin}
   {#await adminScreen()}

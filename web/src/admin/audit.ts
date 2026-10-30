@@ -113,6 +113,17 @@ export function auditDetail(event: AdminAuditEvent): string {
       if (files.length === 0 || (detail.via !== 'archive' && detail.via !== 'file')) return pairs(event)
       return tr(detail.via === 'archive' ? 'admin.audit.hiddenTestViaArchive' : 'admin.audit.hiddenTestViaFile', { files: files.join(', ') })
     }
+    case 'contest.problem.tests': {
+      // Which problem's tests and how (routes/admin-contests.ts records
+      // `{ problem, change }`, a test's number where one test changed); a
+      // change this build has no words for still reads as written.
+      const key = `admin.audit.contestTests.${String(detail.change ?? '')}`
+      if (typeof detail.problem !== 'string' || !hasTranslation(key)) return pairs(event)
+      return tr(key, { problem: detail.problem, test: typeof detail.test === 'number' ? detail.test : '' })
+    }
+    case 'contest.rejudged':
+      // How many went back to the queue, whatever the scope (one, a problem, the contest).
+      return typeof detail.count === 'number' ? tr('admin.audit.contestRejudged', { count: detail.count }) : pairs(event)
     case 'environment.created':
     case 'environment.edited':
       // A package list is a set of lines, and what it gained or lost is the

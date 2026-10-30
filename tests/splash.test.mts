@@ -40,6 +40,7 @@ const READER = 'web/src/screens/ReaderScreen.svelte'
 const SESSION = 'web/src/screens/SessionScreen.svelte'
 const NOTEBOOK = 'web/src/components/notebook/Notebook.svelte'
 const COMPETITIONS = 'web/src/screens/CompetitionsScreen.svelte'
+const CONTEST = 'web/src/screens/ContestScreen.svelte'
 const ROWS = 'web/src/components/ui/RowsSkeleton.svelte'
 
 /** All web sources — used to check that something is gone everywhere. */
@@ -212,6 +213,7 @@ test('every screen that takes over from the splash reports readiness', () => {
     ['room', SESSION],
     ['notebook', NOTEBOOK],
     ['competitions', COMPETITIONS],
+    ['contest', CONTEST],
     ['router', APP],
   ] as const) {
     const source = code(read(file))
@@ -234,10 +236,10 @@ test('every screen that takes over from the splash reports readiness', () => {
 })
 
 test('the splash stands where the skeleton was, and on a screen it is the screen-sized one', () => {
-  // Router: all five waits for a route chunk — reader, competitions, panel
-  // (twice: the panel address and the root) and room.
+  // Router: all six waits for a route chunk — reader, competitions, contests,
+  // panel (twice: the panel address and the root) and room.
   const app = code(read(APP))
-  assert.equal(app.match(/<Splash \/>/g)?.length, 5, 'not every route wait shows the splash')
+  assert.equal(app.match(/<Splash \/>/g)?.length, 6, 'not every route wait shows the splash')
   assert.doesNotMatch(app, /<Splash size="pane"/, 'a pane splash in place of a screen')
   // Panel and reader: the whole screen.
   assert.match(code(read(ADMIN)), /<Splash \/>/, 'the panel lost the splash')
