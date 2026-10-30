@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.30.0](https://github.com/colloq-edu/colloq/compare/v0.29.0...v0.30.0) (2026-10-30)
+
+
+### Features
+
+* **contests:** algorithmic contests with a Docker judge and an ICPC/IOI leaderboard ([#66](https://github.com/colloq-edu/colloq/issues/66)) ([5834e1e](https://github.com/colloq-edu/colloq/commit/5834e1ef9c267c34337f5885353df0c507549496))
+
 ## [0.29.0](https://github.com/colloq-edu/colloq/compare/v0.28.1...v0.29.0) (2026-10-24)
 
 
