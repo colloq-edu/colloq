@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.30.1](https://github.com/colloq-edu/colloq/compare/v0.30.0...v0.30.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **contests:** a contest link unfurls into its own card; contests on the landing page ([#68](https://github.com/colloq-edu/colloq/issues/68)) ([64a49d6](https://github.com/colloq-edu/colloq/commit/64a49d63a2b6d01ef87cc357a055ca87442f2738))
+
 ## [0.30.0](https://github.com/colloq-edu/colloq/compare/v0.29.0...v0.30.0) (2026-10-30)
 
 
