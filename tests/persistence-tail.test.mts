@@ -22,7 +22,7 @@ import * as Y from 'yjs'
 import { cellSource, createCell, getCells, readNotebook } from '../shared/notebook.js'
 import { config } from '../server/src/config.js'
 import { createSession, db, loadDocSnapshot } from '../server/src/db.js'
-import { flushPersistence } from '../server/src/collab/persistence.js'
+import { flushPersistence, readPersisted } from '../server/src/collab/persistence.js'
 import { dropSessionDoc, getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 
 after(() => shutdownCollab())
@@ -46,9 +46,9 @@ const written = () => new Promise((r) => setTimeout(r, config.snapshotIntervalMs
 /** What the server brings back after `kill -9`: the snapshot row plus the tail next to it. */
 function afterCrash(id: string): string[] {
   const doc = new Y.Doc()
-  const snapshot = loadDocSnapshot(id)
+  const { snapshot, tail } = readPersisted(id)
   if (snapshot) Y.applyUpdate(doc, snapshot)
-  if (fs.existsSync(tailFile(id))) Y.applyUpdate(doc, new Uint8Array(fs.readFileSync(tailFile(id))))
+  if (tail) Y.applyUpdate(doc, tail)
   const cells = readNotebook(doc).map((c) => c.source)
   doc.destroy()
   return cells

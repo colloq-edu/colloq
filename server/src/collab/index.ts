@@ -178,8 +178,11 @@ interface ConnState {
 
 interface DocEntry extends SessionDoc {
   conns: Map<WebSocket, ConnState>
-  /** Stop watching the notebooks and release the disk binding, flushing it first. */
-  dispose: () => void
+  /**
+   * Flush the document, then release the disk binding and stop watching the
+   * notebooks. `false`: the edits could not be written, and nothing was released.
+   */
+  dispose: () => boolean
   /** Only stop watching notebooks — for seminar deletion, when there is nowhere to write. */
   unwatch: () => void
   /**
@@ -656,9 +659,12 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   const unwatchBooks = watchBooks(sessionId, doc)
   const closeBinding = entry.dispose
   entry.unwatch = unwatchBooks
+  // The notebooks stop being watched only once the room has made it to disk:
+  // a room that stays in memory goes on working, files included.
   entry.dispose = () => {
+    if (!closeBinding()) return false
     unwatchBooks()
-    closeBinding()
+    return true
   }
 
   /*
@@ -1751,28 +1757,37 @@ export function sweepIdleRooms(now: number = Date.now()): string[] {
     const empty = now - entry.emptySince
     if (empty < IDLE_ROOM_MS) continue
     if (empty < MAX_IDLE_ROOM_MS && (holds.has(entry.sessionId) || atWork(entry.doc))) continue
-    evictRoom(entry)
-    gone.push(entry.sessionId)
+    if (evictRoom(entry)) gone.push(entry.sessionId)
   }
   return gone
 }
 
 /**
  * Remove a room from memory without losing anything that was written.
+ * Returns whether it left.
  *
- * The order here is the whole point: first the open history row is written out
- * (it is somebody's work), then the document snapshot goes to disk, and only
- * after that is the document destroyed together with its observers and
- * presence.
+ * The order here is the whole point: first the document goes to disk, and that
+ * decides — a room whose edits could not be written stays in memory, whole,
+ * with its open history burst, and the next sweep tries again (the write has
+ * its own retry; see persistence.ts · bindPersistence for how this used to
+ * lose the room's last edits). Only then is the open history row written out
+ * (it is somebody's work) and the document destroyed together with its
+ * observers and presence.
  */
-function evictRoom(entry: DocEntry): void {
+function evictRoom(entry: DocEntry): boolean {
+  if (!entry.dispose()) {
+    console.error(
+      `[room ${entry.sessionId}] stays in memory: its last edits could not be written ` +
+        `(see the persistence error above); the next sweep tries again`,
+    )
+    return false
+  }
   docs.delete(entry.sessionId)
   forgetHistory(entry.sessionId)
   // An unclosed presence window would outlive the document and fire into the
   // destroyed `awareness` a quarter of a second after the eviction.
   stopHeartbeat(entry)
   stopFaces(entry)
-  entry.dispose()
   // And what the server remembered about cells deleted in it for Ctrl+Z: after
   // ten minutes of an empty room there is nobody left to undo.
   forgetSession(entry.sessionId)
@@ -1781,6 +1796,7 @@ function evictRoom(entry: DocEntry): void {
   forgetUndo(entry.sessionId)
   entry.doc.destroy()
   console.log(`[room ${entry.sessionId}] released from memory`)
+  return true
 }
 
 /*
@@ -1807,14 +1823,13 @@ setInterval(() => sweepIdleRooms(), ROOM_SWEEP_MS).unref?.()
  *
  * A room with someone in it is not evicted: its document is held by sockets,
  * and for them this would be the same as a teardown. Returns whether it was
- * released: `false` means either the document was not in memory or there are
- * people in the room.
+ * released: `false` means the document was not in memory, there are people in
+ * the room, or its edits could not be written and it stays (see `evictRoom`).
  */
 export function releaseSessionDoc(sessionId: string): boolean {
   const entry = docs.get(sessionId)
   if (!entry || entry.conns.size > 0) return false
-  evictRoom(entry)
-  return true
+  return evictRoom(entry)
 }
 
 /**
@@ -1842,6 +1857,11 @@ export function dropSessionDoc(sessionId: string): void {
   // and the stream itself would notice only on its next frame — no point in
   // paying for an answer to a torn-down room.
   abortSession(sessionId)
+  // What the room keeps on disk goes too, and whether or not it is in memory:
+  // a room nobody has opened since the last restart has no entry here, but it
+  // may well have a tail file from before that restart — and returning early
+  // left it as the only trace of the deleted class.
+  discardPersistence(sessionId)
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)
@@ -1849,7 +1869,6 @@ export function dropSessionDoc(sessionId: string): void {
   // projection timer would outlive the deletion: `dispose` does not fit here,
   // since it writes out a snapshot of a room that no longer exists.
   entry.unwatch()
-  discardPersistence(sessionId)
   // The room is gone; an open burst describing it would be a version of nothing.
   discardBurst(sessionId)
   // And what the server remembered about cells deleted in it: nowhere to bring them back.
@@ -1883,10 +1902,19 @@ export function shutdownCollab(): void {
         /* already gone */
       }
     }
+    // A room whose write fails here gets one more try below, as a tail.
     entry.dispose()
   }
   docs.clear()
-  flushAllPersistence()
+  const unsaved = flushAllPersistence()
+  if (unsaved.length > 0) {
+    // After the exit there is no retry, so this is the last thing anyone will
+    // know about it: say it in full, not as one more failed write in the log.
+    console.error(
+      `[persistence] ${unsaved.length} room(s) could not be saved on the way out — ` +
+        `their edits since the last save are lost: ${unsaved.join(', ')}`,
+    )
+  }
   // The same for files: what was typed in the last half second is work, and
   // stopping the process is no reason to lose it.
   flushAllFiles()
