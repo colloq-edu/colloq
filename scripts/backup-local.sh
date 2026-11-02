@@ -49,7 +49,11 @@
 # not hold: workspace (what was uploaded into the rooms), competition files,
 # wheel sets, the images of cell outputs (data/blobs), the files of class pages
 # (data/page-files: the database only names them by hash), the signing key and
-# the installation token. The README used to
+# the installation token, and the notebooks' tails (data/doc-tail: what each
+# room typed since its last full copy in the database — the copy plus its tail
+# is the notebook, and a backup without the tails is up to half a minute short
+# for every room that was being typed in, or whole classes short after a crash
+# until the room is next opened). The README used to
 # tell people to copy the folder by hand, and that was exactly the step that
 # gets skipped: a database without workspace is notebooks with links to files
 # that no longer exist, and a database without the signing key is an instance
@@ -192,7 +196,7 @@ if [ "$STATE" = "$APP" ]; then SHOW=""; else SHOW="$STATE/"; fi
 
 # What goes into the file archive; see the header for why each one.
 set --
-for p in workspace data/competitions data/contests data/dependencies data/blobs data/page-files data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
+for p in workspace data/competitions data/contests data/dependencies data/blobs data/page-files data/doc-tail data/session-secret data/setup-token "$ENV_LISTS"/*.txt; do
   if [ -e "$p" ] || [ -L "$p" ]; then set -- "$@" "$p"; fi
 done
 
@@ -223,6 +227,13 @@ sqlite3 data/colloq.db "VACUUM INTO '${sql_out//\'/\'\'}'" \
 # chmod stays for whoever changes that line.
 chmod 600 "$out"
 
+# The tails are packed a moment after the database was copied, and that is
+# safe on purpose: every tail names the snapshot it continues (the digest at
+# its head — server/src/collab/persistence.ts · TAIL_MAGIC), and the server
+# applies it only on top of that very snapshot. A tail of the copied snapshot
+# makes the room in the backup newer by those seconds; a tail of a full copy
+# written after VACUUM INTO is ignored on open, and the room comes back as the
+# database copy has it. Never a mix of the two.
 made_files=""
 if [ $# -gt 0 ]; then
   list="$(mktemp backups/.colloq-list.XXXXXX)"

@@ -174,6 +174,39 @@ test('a tab that did not ask for notes does not get them', () => {
   closeControlRoom(id)
 })
 
+test('the device that wrote an edit hears it back even without that document open', () => {
+  /*
+   * A reconnecting editor resends its unconfirmed edits before it asks for
+   * any notes, and an editor that has moved to another deck still waits to
+   * hear the last edit of the previous one land. Each lets an edit go only on
+   * its echo; without one, it would keep resending it on every reconnect,
+   * over whatever was written on that slide since.
+   */
+  const { id, first, second, guest } = room()
+  const reconnected = socket()
+  handleControlSocket(reconnected.ws, id, who(id, 'host', 'host'))
+  reconnected.heard.length = 0
+  say(id, reconnected, who(id, 'host', 'host'), { t: 'notes:set', file: 'l3.pdf', page: 2, text: ' набрано без сети ' })
+  const echo = { t: 'notes:one', file: 'l3.pdf', page: 2, text: 'набрано без сети' }
+  assert.deepEqual(notesFrames(reconnected.heard), [echo], 'the sender never learns its edit landed')
+  // Those who asked about the document hear it as before, the hall does not.
+  assert.deepEqual(notesFrames(first.heard), [echo])
+  assert.deepEqual(notesFrames(second.heard), [echo])
+  assert.deepEqual(notesFrames(guest.heard), [])
+
+  // With another document open the sender still hears it, once.
+  say(id, second, who(id, 'host', 'host2'), { t: 'notes:open', file: 'other.pdf' })
+  for (const one of [first, second]) one.heard.length = 0
+  say(id, second, who(id, 'host', 'host2'), { t: 'notes:set', file: 'l3.pdf', page: 3, text: 'последнее' })
+  const last = { t: 'notes:one', file: 'l3.pdf', page: 3, text: 'последнее' }
+  assert.deepEqual(notesFrames(second.heard), [last])
+  assert.deepEqual(notesFrames(first.heard), [last], 'subscribed and the sender: one echo, not two')
+  say(id, first, who(id, 'host', 'host'), { t: 'notes:set', file: 'l3.pdf', page: 3, text: 'ещё' })
+  assert.equal(notesFrames(first.heard).length, 2, 'a subscribed sender heard its edit twice')
+  assert.equal(notesFrames(second.heard).length, 1, 'the note went to a different document')
+  closeControlRoom(id)
+})
+
 /* -------------------------------------------------------- empty note */
 
 test('an empty note is its absence, not an empty string in the map', () => {

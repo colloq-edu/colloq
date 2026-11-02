@@ -37,6 +37,7 @@ import { startDatabaseSnapshots, stopDatabaseSnapshots } from './db-snapshots.js
 import { startMetrics } from './ops/metrics.js'
 import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { sweepAllStaleUploads } from './workspace.js'
+import { sweepOrphanTails } from './collab/persistence.js'
 import {
   reclaimCompetitionQueue,
   startCompetitionPump,
@@ -159,9 +160,11 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    *
    * A half-written file survives exactly the crash we are now starting after;
    * in a room where nothing is being uploaded there was nobody else to remove
-   * it (see sweepAllStaleUploads).
+   * it (see sweepAllStaleUploads). The same for the notebooks' tail files:
+   * a deletion cut short leaves the only trace of a deleted class on disk.
    */
   sweepAllStaleUploads()
+  sweepOrphanTails()
   /*
    * The census is assembled here, not inside `log.ts`: that module loads first
    * in the process, before collab and kernel, and importing them from there

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
@@ -122,6 +123,8 @@ interface Binding {
    */
   snapshotVector: Uint8Array | null
   snapshotAt: number
+  /** Which snapshot row that is — the name every tail written now carries (see `TAIL_MAGIC`). */
+  snapshotDigest: Uint8Array
   /** Whether a tail is currently on disk. */
   tailed: boolean
   /** Transactions that deleted something, here and as of the last snapshot. */
@@ -198,7 +201,14 @@ function intervalFor(bytes: number): number {
 const selectSessionRow = db.prepare('SELECT 1 FROM sessions WHERE id = ?')
 
 function sessionRowExists(sessionId: string): boolean {
-  return selectSessionRow.get(sessionId) !== undefined
+  try {
+    return selectSessionRow.get(sessionId) !== undefined
+  } catch {
+    // A database that cannot even be read cannot say the room is gone, and a
+    // wrong "gone" throws away its edits. Whatever then gets written for a room
+    // deleted after all is an orphan the startup sweep removes (sweepOrphanTails).
+    return true
+  }
 }
 
 /* ------------------------------------------------------------------- tail */
@@ -223,13 +233,48 @@ function tailPath(sessionId: string): string | null {
   return path.join(config.dataDir, TAIL_DIR, `${sessionId}.bin`)
 }
 
-function writeTail(sessionId: string, update: Uint8Array): boolean {
+/*
+ * A tail names the snapshot it is the difference from.
+ *
+ * A tail on its own is only half of a document, and it used to be applied to
+ * whatever snapshot row it found. That is right as long as the two were
+ * written by one process one after the other, and wrong the moment the
+ * database is swapped under them: an older database restored from a backup
+ * picked up the tail of the newer one and opened as "the backup plus edits
+ * made after it" — and a deletion in that tail erased exactly the text the
+ * restore was for. A database copied a second apart from the tails pairs a
+ * snapshot with a tail of a different one just the same, and then Yjs parks
+ * whatever the tail builds on in pending and the notebook opens short,
+ * silently.
+ *
+ * So the file starts with a mark and the digest of the snapshot row it was
+ * computed against, and a tail is applied only to that row. A mismatch is not
+ * an error to recover from: either the snapshot is newer (the process died
+ * between writing it and removing the tail — the snapshot already holds
+ * everything) or it is a different timeline altogether (a restore) — in both
+ * cases applying it would be the mistake. A file without the mark was written
+ * before this rule and is applied as before, once.
+ *
+ * The mark cannot be mistaken for a bare update: a Yjs update starts with the
+ * count of clients it carries, and 0xFF 0x43 … reads as tens of thousands.
+ */
+const TAIL_MAGIC = Buffer.from([0xff, 0x43, 0x51, 0x54, 0x41, 0x49, 0x4c, 0x31]) // \xffCQTAIL1
+const DIGEST_BYTES = 16
+/** The name of "no snapshot row": a tail written for a room the database has never held. */
+const NO_SNAPSHOT = new Uint8Array(DIGEST_BYTES)
+
+function digestOf(snapshot: Uint8Array | null): Uint8Array {
+  if (!snapshot) return NO_SNAPSHOT
+  return new Uint8Array(createHash('sha256').update(snapshot).digest().subarray(0, DIGEST_BYTES))
+}
+
+function writeTail(sessionId: string, base: Uint8Array, update: Uint8Array): boolean {
   const file = tailPath(sessionId)
   if (!file) return false
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     const tmp = `${file}.${process.pid}.tmp`
-    fs.writeFileSync(tmp, update, { mode: 0o600 })
+    fs.writeFileSync(tmp, Buffer.concat([TAIL_MAGIC, base, update]), { mode: 0o600 })
     fs.renameSync(tmp, file)
     return true
   } catch (err) {
@@ -238,15 +283,38 @@ function writeTail(sessionId: string, update: Uint8Array): boolean {
   }
 }
 
-function readTail(sessionId: string): Uint8Array | null {
+/** The tail on disk and the snapshot it names; `base` is null for a tail from before the mark. */
+function readTail(sessionId: string): { base: Uint8Array | null; update: Uint8Array } | null {
   const file = tailPath(sessionId)
   if (!file) return null
+  let body: Buffer
   try {
-    const body = fs.readFileSync(file)
-    return body.length > 0 ? new Uint8Array(body) : null
+    body = fs.readFileSync(file)
   } catch {
     return null
   }
+  const head = TAIL_MAGIC.length + DIGEST_BYTES
+  if (body.length >= head && body.subarray(0, TAIL_MAGIC.length).equals(TAIL_MAGIC)) {
+    const update = body.subarray(head)
+    if (update.length === 0) return null
+    return {
+      base: new Uint8Array(body.subarray(TAIL_MAGIC.length, head)),
+      update: new Uint8Array(update),
+    }
+  }
+  return body.length > 0 ? { base: null, update: new Uint8Array(body) } : null
+}
+
+/**
+ * What the next open will load for a room: its snapshot row and the tail that
+ * belongs to it — the same pair `bindPersistence` applies, for code (and
+ * tests) that has to read a room's durable state without opening it.
+ */
+export function readPersisted(sessionId: string): { snapshot: Uint8Array | null; tail: Uint8Array | null } {
+  const snapshot = loadDocSnapshot(sessionId)
+  const tail = readTail(sessionId)
+  const belongs = tail && (!tail.base || sameBytes(tail.base, digestOf(snapshot)))
+  return { snapshot, tail: belongs ? tail.update : null }
 }
 
 /**
@@ -278,6 +346,7 @@ function dropTail(sessionId: string): void {
 function full(binding: Binding, vector: Uint8Array): number {
   const update = Y.encodeStateAsUpdate(binding.doc)
   saveDocSnapshot(binding.sessionId, update)
+  binding.snapshotDigest = digestOf(update)
   if (binding.tailed) {
     dropTail(binding.sessionId)
     binding.tailed = false
@@ -293,6 +362,30 @@ function full(binding: Binding, vector: Uint8Array): number {
     binding.settleTimer = null
   }
   return update.byteLength
+}
+
+/**
+ * Everything the snapshot row lacks, as a tail — when the row itself cannot
+ * be written.
+ *
+ * The last resort of a room that is leaving memory or a process that is
+ * exiting while the database refuses writes (a full disk, a read-only file,
+ * an I/O error): the tail goes to a plain file next to the database, past
+ * SQLite, so a database that is the thing failing does not take the room's
+ * last edits with it. Snapshot plus tail is the document, so this is as
+ * durable as a full copy — only bigger to load next time, and the first full
+ * copy after that folds it in. Returns whether the document is on disk now.
+ */
+function spill(binding: Binding): boolean {
+  if (!sessionRowExists(binding.sessionId)) return true
+  const vector = Y.encodeStateVector(binding.doc)
+  const tail = Y.encodeStateAsUpdate(binding.doc, binding.snapshotVector ?? undefined)
+  if (!writeTail(binding.sessionId, binding.snapshotDigest, tail)) return false
+  binding.tailed = true
+  binding.dirtySince = 0
+  binding.savedVector = vector
+  binding.savedDeletions = binding.deletions
+  return true
 }
 
 /** Write the room whole once people stop typing in it. */
@@ -315,7 +408,12 @@ function settle(binding: Binding): void {
   binding.settleTimer.unref?.()
 }
 
-function write(binding: Binding, force = false): void {
+/**
+ * Bring the disk up to the document. Returns whether it is there now — written
+ * just now, already there, or nothing to write for a room that no longer
+ * exists; `false` means the edits are only in memory, and a retry is set.
+ */
+function write(binding: Binding, force = false): boolean {
   if (binding.timer) {
     clearTimeout(binding.timer)
     binding.timer = null
@@ -331,7 +429,9 @@ function write(binding: Binding, force = false): void {
         console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
       }
     }
-    return
+    // Clean means snapshot plus tail already is the document: a full copy
+    // that did not happen is a missed tidy-up, not a loss.
+    return true
   }
 
   // The last word on a deleted seminar. Anything still holding this document —
@@ -344,7 +444,7 @@ function write(binding: Binding, force = false): void {
       dropTail(binding.sessionId)
       binding.tailed = false
     }
-    return
+    return true
   }
 
   // Two questions, because Yjs answers "what changed?" in two places: inserts
@@ -358,7 +458,7 @@ function write(binding: Binding, force = false): void {
     sameBytes(vector, binding.savedVector)
   ) {
     binding.dirtySince = 0
-    return
+    return true
   }
 
   /*
@@ -376,7 +476,7 @@ function write(binding: Binding, force = false): void {
     const began = process.hrtime.bigint()
     if (canTail) {
       const tail = Y.encodeStateAsUpdate(binding.doc, binding.snapshotVector!)
-      if (!writeTail(binding.sessionId, tail)) throw new Error('tail write failed')
+      if (!writeTail(binding.sessionId, binding.snapshotDigest, tail)) throw new Error('tail write failed')
       binding.tailed = true
       binding.dirtySince = 0
       binding.savedVector = vector
@@ -429,7 +529,9 @@ function write(binding: Binding, force = false): void {
       if (bindings.get(binding.sessionId) === binding) write(binding)
     }, RETRY_MS)
     binding.timer.unref?.()
+    return false
   }
+  return true
 }
 
 function schedule(binding: Binding): void {
@@ -453,12 +555,17 @@ function schedule(binding: Binding): void {
 
 /**
  * Hydrate `doc` from its stored snapshot and keep writing it back as it changes.
- * Returns a disposer that flushes synchronously and stops observing.
+ * Returns a disposer that flushes synchronously and stops observing — and says
+ * whether it could: `false` leaves the binding in place (see the disposer).
  */
-export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
+export function bindPersistence(sessionId: string, doc: Y.Doc): () => boolean {
   const previous = bindings.get(sessionId)
   if (previous) {
-    write(previous)
+    if (!write(previous) && !spill(previous)) {
+      console.error(`[persistence] ${sessionId} was bound again before its last edits reached the disk; they are lost`)
+    }
+    if (previous.timer) clearTimeout(previous.timer)
+    if (previous.settleTimer) clearTimeout(previous.settleTimer)
     previous.doc.off('update', previous.onUpdate)
     bindings.delete(sessionId)
   }
@@ -474,6 +581,7 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
     savedBytes: 0,
     snapshotVector: null,
     snapshotAt: 0,
+    snapshotDigest: NO_SNAPSHOT,
     tailed: false,
     deletions: 0,
     savedDeletions: 0,
@@ -495,6 +603,7 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
     binding.snapshotVector = binding.savedVector
     binding.snapshotAt = Date.now()
   }
+  binding.snapshotDigest = digestOf(snapshot)
   /*
    * And the tail — whatever the room managed to write after the last full copy.
    *
@@ -503,11 +612,21 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
    * the tail is all that is left of the room. It is applied AFTER the snapshot
    * because it describes the difference from it; Yjs will apply an extra,
    * already counted tail and change nothing.
+   *
+   * Only the tail of THIS snapshot (see `TAIL_MAGIC`). The tail of another one
+   * is either already inside it or from another timeline, and the file goes:
+   * left in place it would only make the next open ask the same question.
    */
   const tail = readTail(sessionId)
-  if (tail) {
+  if (tail?.base && !sameBytes(tail.base, binding.snapshotDigest)) {
+    console.warn(
+      `[persistence] the tail of ${sessionId} was written against another snapshot ` +
+        `(a newer full copy, or a database restored under it) — not applied`,
+    )
+    dropTail(sessionId)
+  } else if (tail) {
     try {
-      Y.applyUpdate(doc, tail, ORIGIN)
+      Y.applyUpdate(doc, tail.update, ORIGIN)
       binding.tailed = true
       binding.savedVector = Y.encodeStateVector(doc)
     } catch (err) {
@@ -529,13 +648,40 @@ export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
   bindings.set(sessionId, binding)
 
   return () => {
-    if (bindings.get(sessionId) !== binding) return
+    if (bindings.get(sessionId) !== binding) return true
+    if (binding.settleTimer) {
+      clearTimeout(binding.settleTimer)
+      binding.settleTimer = null
+    }
+    /*
+     * The write comes first, while the binding is still registered, and it
+     * decides whether the room may leave at all.
+     *
+     * It used to be the other way round: the binding was removed, then the
+     * last write tried — and a write that failed (a full disk, a read-only
+     * database, an I/O error) set its retry for a binding that was no longer
+     * there, so the retry did nothing, the caller destroyed the document, and
+     * the room's last edits existed nowhere any more. The diagnostics said
+     * "nothing dirty", because there was nothing left to be dirty.
+     *
+     * Now a failed full copy falls back to a tail file (`spill` — past
+     * SQLite, which is usually the thing failing), and when even that fails
+     * the binding stays, its retry stays, and `false` tells the caller to keep
+     * the document in memory: collab/index.ts · evictRoom tries again on the
+     * next sweep.
+     *
+     * Whole when it can: the room is leaving memory and may be loaded a week
+     * from now, and a snapshot without a file next to it is the cheaper thing
+     * to load.
+     */
+    if (!write(binding, true) && !spill(binding)) return false
+    if (binding.timer) {
+      clearTimeout(binding.timer)
+      binding.timer = null
+    }
     bindings.delete(sessionId)
     doc.off('update', binding.onUpdate)
-    if (binding.settleTimer) clearTimeout(binding.settleTimer)
-    // The room is leaving memory, so what must stay on disk is the whole room,
-    // not a snapshot with a file next to it: it may be loaded a week from now.
-    write(binding, true)
+    return true
   }
 }
 
@@ -608,7 +754,50 @@ export function flushPersistence(sessionId: string): void {
   if (binding) write(binding, true)
 }
 
-/** Last-chance save for every live document, called on shutdown. */
-export function flushAllPersistence(): void {
-  for (const binding of bindings.values()) write(binding, true)
+/**
+ * Last-chance save for every live document, called on shutdown. Returns the
+ * rooms whose edits could not be written even as a tail — the caller says so
+ * out loud, since after the exit there is no retry.
+ */
+export function flushAllPersistence(): string[] {
+  const unsaved: string[] = []
+  for (const binding of bindings.values()) {
+    if (!write(binding, true) && !spill(binding)) unsaved.push(binding.sessionId)
+  }
+  return unsaved
+}
+
+/**
+ * Remove what is left in the tail folder by rooms that no longer exist —
+ * once, as the server starts.
+ *
+ * A deletion removes the room's tail itself (`discardPersistence`), but only
+ * when it gets there: a server killed in the middle of one, or a tail spilled
+ * for a room whose database could not say it was gone (`sessionRowExists`),
+ * leave a file nobody will ever read — the only trace of a deleted class on
+ * disk. And a temporary file is a write some earlier process never renamed:
+ * this one has written nothing yet.
+ */
+export function sweepOrphanTails(): number {
+  const dir = path.join(config.dataDir, TAIL_DIR)
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    const room = /^([A-Za-z0-9_-]{1,64})\.bin$/.exec(name)?.[1]
+    const stale = name.endsWith('.tmp') && !name.endsWith(`.${process.pid}.tmp`)
+    if (!stale && (!room || sessionRowExists(room))) continue
+    try {
+      fs.rmSync(path.join(dir, name), { force: true })
+      removed++
+    } catch {
+      /* tried again on the next start */
+    }
+  }
+  if (removed > 0) console.log(`[persistence] removed ${removed} tail file(s) of rooms that no longer exist`)
+  return removed
 }

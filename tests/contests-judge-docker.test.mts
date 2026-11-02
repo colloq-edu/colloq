@@ -4,11 +4,12 @@
  *
  * It proves what only a container can: that a correct Python and a correct C++
  * submission are judged OK, that WA/TL/ML/RE/CE come back as themselves through
- * the whole pipeline, and above all the two safety properties the design rests
+ * the whole pipeline, and above all the safety properties the design rests
  * on — a program CANNOT READ THE ANSWERS (everything under /secret and the
  * harness's own descriptors is closed to it: a solution that tries gets WA, not
- * OK) and a program CANNOT OUTLIVE ITS TEST (a child it double-forks is gone by
- * the next test, the container is removed after).
+ * OK) and a program CANNOT START ANOTHER PROCESS (fork, subprocess, posix_spawn,
+ * system() all fail, threads work: its memory is one process's peak, and
+ * nothing it starts can outlive its test).
  *
  * C++ needs a compiler the base kernel does not yet carry, so this builds a
  * throwaway image `colloq-contest-test:gpp` from `colloq-kernel:base` once (it
@@ -153,28 +154,148 @@ test('docker: the program cannot read the answers (/secret and the harness fds a
   assert.ok(!(outcome.tests[0].output ?? '').includes('3'), 'the answer must not appear in what the program could read')
 })
 
-test('docker: a double-forked child does not outlive its test', { skip: !enabled, timeout: 120_000 }, async () => {
-  // Test 1 leaves a grandchild sleeping a minute; if it survived into test 2
-  // the run would hang near the wall budget. Both tests pass quickly instead.
-  const source =
+/*
+ * A program is one process (audit F09). Its memory is the peak wait4 reports,
+ * and that is the largest of its processes, not their sum: two children of
+ * 64 MiB each under a 96 MiB limit were OK, each child under the limit on its
+ * own. Every way to start a process now fails, so a program that leans on one
+ * fails with it (RE: the program reports the refusal and exits non-zero), and
+ * nothing it starts can outlive its test. Threads still work, and count
+ * together: they share the one process's memory.
+ */
+const PY_CHILD = 'b = bytearray(64 << 20)\\nfor i in range(0, len(b), 4096):\\n    b[i] = 1\\nimport time\\ntime.sleep(0.3)\\n'
+const SPREAD_PY: Record<string, string> = {
+  'os.fork':
     'import os, sys, time\n' +
-    'data = sys.stdin.readline().strip()\n' +
-    'if data == "1":\n' +
-    '    if os.fork() == 0:\n' +
-    '        os.setsid()\n' +
-    '        if os.fork() == 0:\n' +
-    '            time.sleep(60)\n' +
+    'a, b = map(int, sys.stdin.readline().split())\n' +
+    'kids = []\n' +
+    'for _ in range(2):\n' +
+    '    pid = os.fork()\n' +
+    '    if pid == 0:\n' +
+    `        exec("${PY_CHILD}")\n` +
     '        os._exit(0)\n' +
-    '    time.sleep(0.2)\n' +
-    'print("ok")\n'
-  const started = Date.now()
-  const { outcome } = await judge(BASE, {
-    source,
-    checker: 'lines',
-    tests: [{ ordinal: 1, input: '1\n', answer: 'ok\n' }, { ordinal: 2, input: '2\n', answer: 'ok\n' }],
+    '    kids.append(pid)\n' +
+    'assert all(os.waitpid(pid, 0)[1] == 0 for pid in kids)\n' +
+    'print(a + b)\n',
+  subprocess:
+    'import subprocess, sys\n' +
+    'a, b = map(int, sys.stdin.readline().split())\n' +
+    `kids = [subprocess.Popen([sys.executable, "-c", "${PY_CHILD}"]) for _ in range(2)]\n` +
+    'assert all(kid.wait() == 0 for kid in kids)\n' +
+    'print(a + b)\n',
+  multiprocessing:
+    'import multiprocessing, sys, time\n' +
+    'def grab(_):\n' +
+    '    block = bytearray(64 << 20)\n' +
+    '    for i in range(0, len(block), 4096):\n' +
+    '        block[i] = 1\n' +
+    '    time.sleep(0.3)\n' +
+    '    return 1\n' +
+    'if __name__ == "__main__":\n' +
+    '    a, b = map(int, sys.stdin.readline().split())\n' +
+    '    with multiprocessing.Pool(2) as pool:\n' +
+    '        assert sum(pool.map(grab, range(2))) == 2\n' +
+    '    print(a + b)\n',
+}
+/** The C side: the same two children of 64 MiB, started three ways; argv[1] makes the binary a child. */
+const C_CHILD =
+  '#include <spawn.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n#include <sys/wait.h>\n' +
+  'extern char **environ;\n' +
+  // volatile: at -O2 GCC drops a malloc and memset nothing reads back, and the child would hold no memory at all.
+  'static int child(void) { size_t n = 64u << 20; volatile char *p = malloc(n); if (!p) return 1; for (size_t i = 0; i < n; i += 4096) p[i] = 1; usleep(300000); return p[n - 4096] == 1 ? 0 : 1; }\n' +
+  'static int reaped(pid_t pid) { int st; return waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0; }\n'
+const SPREAD_C: Record<string, string> = {
+  fork: C_CHILD +
+    'int main(void) { long a, b; if (scanf("%ld %ld", &a, &b) != 2) return 2; pid_t kids[2];\n' +
+    '  for (int k = 0; k < 2; k++) { kids[k] = fork(); if (kids[k] < 0) { perror("fork"); return 1; } if (kids[k] == 0) _exit(child()); }\n' +
+    '  if (!reaped(kids[0]) || !reaped(kids[1])) return 1; printf("%ld\\n", a + b); return 0; }\n',
+  posix_spawn: C_CHILD +
+    'int main(int argc, char **argv) { if (argc > 1) return child(); long a, b; if (scanf("%ld %ld", &a, &b) != 2) return 2;\n' +
+    '  char *args[] = { argv[0], "child", NULL }; pid_t kids[2];\n' +
+    '  for (int k = 0; k < 2; k++) { int rc = posix_spawn(&kids[k], argv[0], NULL, NULL, args, environ); if (rc) { fprintf(stderr, "posix_spawn: %s\\n", strerror(rc)); return 1; } }\n' +
+    '  if (!reaped(kids[0]) || !reaped(kids[1])) return 1; printf("%ld\\n", a + b); return 0; }\n',
+  system: C_CHILD +
+    'int main(int argc, char **argv) { if (argc > 1) return child(); long a, b; if (scanf("%ld %ld", &a, &b) != 2) return 2;\n' +
+    '  char line[512]; snprintf(line, sizeof line, "%s child & %s child & wait", argv[0], argv[0]);\n' +
+    '  int rc = system(line); if (rc != 0) { fprintf(stderr, "system: %d\\n", rc); return 1; } printf("%ld\\n", a + b); return 0; }\n',
+}
+const ONE_SUM: BuildOptions['tests'] = [{ ordinal: 1, input: '1 2\n', answer: '3\n' }]
+
+/** Every way judged, then one assertion over all of them: a failure shows the whole picture, not its first line. */
+async function spread(image: string, language: 'python3' | 'c17', ways: Record<string, string>) {
+  const seen: Record<string, JudgeOutcome> = {}
+  for (const [way, source] of Object.entries(ways)) {
+    const started = Date.now()
+    seen[way] = (await judge(image, { language, source, memoryMb: 96, tests: ONE_SUM })).outcome
+    console.log(`[contest-judge] ${language} ${way}: ${seen[way].verdict}, ${seen[way].tests[0]?.memoryKb ?? '?'} KB, ${seen[way].tests[0]?.exit ?? 'exit 0'}, ${Date.now() - started} ms`)
+  }
+  assert.deepEqual(Object.fromEntries(Object.entries(seen).map(([way, outcome]) => [way, outcome.verdict])),
+    Object.fromEntries(Object.keys(ways).map((way) => [way, 'RE'])), JSON.stringify(seen))
+  return seen
+}
+
+test('docker: a Python program cannot spread its memory over processes — fork, subprocess, multiprocessing', { skip: !enabled, timeout: 240_000 }, async () => {
+  for (const [way, outcome] of Object.entries(await spread(BASE, 'python3', SPREAD_PY)))
+    assert.match(outcome.tests[0].stderr ?? '', /PermissionError|Operation not permitted/, way)
+})
+
+test('docker: a C program cannot either — fork, posix_spawn, system()', { skip: !enabled, timeout: 240_000 }, async () => {
+  for (const [way, outcome] of Object.entries(await spread(GPP, 'c17', SPREAD_C)))
+    assert.match(outcome.tests[0].stderr ?? '', /fork|posix_spawn|system/, way)
+})
+
+test('docker: threads still work, and their memory counts together', { skip: !enabled, timeout: 240_000 }, async () => {
+  const threads = await judge(GPP, {
+    language: 'cpp20',
+    source:
+      '#include <iostream>\n#include <thread>\n' +
+      'int main() { long a, b, parts[2]; std::cin >> a >> b;\n' +
+      '  std::thread first([&] { parts[0] = a; }), second([&] { parts[1] = b; });\n' +
+      '  first.join(); second.join(); std::cout << parts[0] + parts[1] << "\\n"; }\n',
+    tests: THREE,
   })
-  assert.equal(outcome.verdict, 'OK')
-  assert.ok(Date.now() - started < 30_000, 'the run must not wait on the grandchild')
+  assert.equal(threads.outcome.verdict, 'OK', JSON.stringify(threads.outcome))
+  // numpy is imported with its thread pools capped (base_env): an import, not a process.
+  const python = await judge(BASE, {
+    source:
+      'import sys, threading\nimport numpy as np\n' +
+      'parts = [0, 0]\n' +
+      'def put(i, value):\n    parts[i] = int(np.int64(value))\n' +
+      'for line in sys.stdin:\n' +
+      '    a, b = map(int, line.split())\n' +
+      '    workers = [threading.Thread(target=put, args=(0, a)), threading.Thread(target=put, args=(1, b))]\n' +
+      '    for w in workers:\n        w.start()\n' +
+      '    for w in workers:\n        w.join()\n' +
+      '    print(sum(parts))\n',
+    tests: THREE,
+  })
+  assert.equal(python.outcome.verdict, 'OK', JSON.stringify(python.outcome))
+  // Two threads of 64 MiB each are one process of 128: ML under 96, as the children should have been.
+  const together = await judge(GPP, {
+    language: 'cpp20',
+    source:
+      '#include <chrono>\n#include <iostream>\n#include <thread>\n#include <vector>\n' +
+      'int main() { long a, b; std::cin >> a >> b; char got[2];\n' +
+      '  auto grab = [](char *out) { std::vector<char> block(64u << 20, 1); std::this_thread::sleep_for(std::chrono::milliseconds(300)); *out = block.back(); };\n' +
+      '  std::thread first(grab, &got[0]), second(grab, &got[1]); first.join(); second.join();\n' +
+      '  std::cout << a + b + got[0] - got[1] << "\\n"; }\n',
+    memoryMb: 96,
+    tests: ONE_SUM,
+  })
+  assert.equal(together.outcome.verdict, 'ML', JSON.stringify(together.outcome))
+  assert.ok((together.outcome.tests[0].memoryKb ?? 0) > 128 * 1024, JSON.stringify(together.outcome.tests[0]))
+})
+
+test('docker: one process near its limit — under is OK, over is ML, memory given back is not counted twice', { skip: !enabled, timeout: 240_000 }, async () => {
+  const grab = (mib: number) => `b = bytearray(${mib} << 20)\nfor i in range(0, len(b), 4096):\n    b[i] = 1\n`
+  const sum = 'import sys\na, b = map(int, sys.stdin.readline().split())\nprint(a + b)\n'
+  const under = await judge(BASE, { source: grab(60) + sum, memoryMb: 96, tests: ONE_SUM })
+  assert.equal(under.outcome.verdict, 'OK', JSON.stringify(under.outcome))
+  assert.ok((under.outcome.memoryKb ?? 0) > 60 * 1024 && (under.outcome.memoryKb ?? 0) < 96 * 1024, JSON.stringify(under.outcome))
+  const over = await judge(BASE, { source: grab(110) + sum, memoryMb: 96, tests: ONE_SUM })
+  assert.equal(over.outcome.verdict, 'ML', JSON.stringify(over.outcome))
+  const twice = await judge(BASE, { source: grab(60) + 'del b\n' + grab(60) + sum, memoryMb: 96, tests: ONE_SUM })
+  assert.equal(twice.outcome.verdict, 'OK', JSON.stringify(twice.outcome))
 })
 
 test('docker: a correct C++ solution is OK; the C++ overhead is reported', { skip: !enabled, timeout: 180_000 }, async () => {

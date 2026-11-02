@@ -13,6 +13,27 @@ and council A → B → A from a fresh browser context without IndexedDB state.
 Only connection availability is controlled; server responses are not fabricated.
 Code assertions exclude the remote-cursor name widgets from rendered code lines.
 
+`markdown.spec.ts` covers what other people's notes may do to the page they
+are drawn into: the app's own classes, popovers, ids and `data-*` names, and a
+`data-math` that imitates the renderer's formula placeholders. It needs
+the production build because the overlay it guards against is made of the app's
+real utility classes, and only the built stylesheet says what they do. Its rooms
+are seeded in `server.mts` with fixed cell ids. `outputs.spec.ts` does the same
+for rich kernel output: a stylesheet in an output, `:host` included, must stay
+inside the output's box while pandas-style and SVG rules still style it.
+`note-images.spec.ts` checks that a figure from the room's folder in a note
+recovers by itself from a ticket request the network lost and from a file that
+was uploaded after the note was written — the retry is driven by the note's own
+effect, which only the built app runs.
+
+`notes-offline.spec.ts` signs in as the fixture's owner (the setup token in
+`fixture.ts`, written into the temporary data directory before the server
+reads it) and drives the speaker-notes editor and the lecture column: offline
+edits across slide turns, the server's echoes held back for seconds, and a
+save swallowed by a connection that then drops. Delays keep each frame in
+order; the texts compared at the end are read back from the server by a fresh
+browser.
+
 Playwright's [web server lifecycle](https://playwright.dev/docs/test-webserver)
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute)
 provide the isolated server and controlled connection loss. CI retains traces

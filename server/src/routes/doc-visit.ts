@@ -57,7 +57,9 @@ export function visitSessionDoc<T>(sessionId: string, visit: (doc: Y.Doc) => T):
      * We do not check the answer of `releaseSessionDoc`: it says `false` about
      * a room with people in it, and only rooms for which `peek` returned null
      * get here, with no await between that and the eviction, so nobody can
-     * join mid-visit.
+     * join mid-visit. The other `false` — the disk refused the room's edits —
+     * keeps the room in memory, and the idle sweep takes it once the disk is
+     * back; there is nothing more for a visitor to do about it.
      */
     flushHistory(sessionId)
     flushPersistence(sessionId)

@@ -3,7 +3,7 @@ import { isIP } from 'node:net'
 import type { CompetitionCapabilities, RuntimeCapability } from '../../shared/capabilities.js'
 import { resolveRuntimeEnvironment, type RuntimeCatalog } from '../../shared/runtime.js'
 import {
-  COMPETITION_GPU_PULL_SECONDS_MAX, COMPETITION_JOB_ID, COMPETITION_RESOURCES_UNAVAILABLE, parseCompetitionJobIntent,
+  COMPETITION_GPU_PULL_SECONDS_MAX, COMPETITION_JOB_ID, COMPETITION_RESOURCES_UNAVAILABLE, parseCompetitionJobIntent, parseCompetitionJobProgress,
   type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobKind,
   type CompetitionJobProgress, type CompetitionJobStatus,
 } from '../../shared/competition-runtime.js'
@@ -199,6 +199,45 @@ function exportBudget(kind: CompetitionJobKind, target: number): number {
   if (kind === 'metric') return Math.min(2 * target, 16 * MiB)
   if (kind === 'resolve') return Math.min(target + 8 * MiB, 512 * MiB)
   return Math.min(target, 2 * MiB)
+}
+/**
+ * The phases the notebook harness writes into progress.json (harness.ts ·
+ * RUN_NOTEBOOK: the install's line in main, Runner.beat for the rest), as the
+ * app knows them: the install apart, every other line is the notebook running.
+ */
+const HARNESS_PHASES: Readonly<Record<string, CompetitionJobProgress['phase']>> = {
+  dependencies: 'dependencies', start: 'notebook', cell: 'notebook', truncated: 'notebook', done: 'notebook', finished: 'notebook',
+}
+/**
+ * A job's progress for the app, built field by field from what its exporter
+ * read in the Pod (export-sidecar.ts · progress); null when the Pod said
+ * nothing this job can vouch for.
+ *
+ * A notebook's line is the harness's own beacon, not the contract: it names
+ * the attempt it belongs to, has phases of its own and keys the app never
+ * reads (elapsed, outputTruncated). Forwarded whole, the install's line
+ * failed the app's parser on its attemptId, the app's poll threw, and the app
+ * cancelled the very submission it was polling; every cell's line was dropped
+ * for a phase not on the list, and a Kubernetes submission never showed which
+ * cell it was on (audit F03). The Docker runner has always read the same file
+ * this way (docker-runner.ts · watch): this attempt's lines only, the install
+ * apart from the rest. It is also the participant's to overwrite — the
+ * notebook's kernel runs as the harness's user — so nothing of it reaches the
+ * app unchecked.
+ *
+ * A package preparation's line is the exporter's own, already in the public
+ * shape and named after the job's kind. A metric and an inventory write none.
+ */
+function jobProgress(intent: CompetitionJobIntent, reported: unknown): CompetitionJobProgress | null {
+  if (!reported || typeof reported !== 'object' || Array.isArray(reported)) return null
+  const line = reported as Record<string, unknown>
+  const phase = intent.kind === 'notebook'
+    ? line.attemptId === intent.attemptId && typeof line.phase === 'string' && Object.hasOwn(HARNESS_PHASES, line.phase) ? HARNESS_PHASES[line.phase] : null
+    : (intent.kind === 'resolve' || intent.kind === 'verify') && line.phase === intent.kind ? intent.kind : null
+  if (!phase) return null
+  // Checked by the app's own parser before it goes: a cell count past the bounds is no progress either.
+  try { return parseCompetitionJobProgress({ phase, cell: line.cell, cells: line.cells, outputBytes: line.outputBytes }) }
+  catch { return null }
 }
 
 export class CompetitionJobs {
@@ -674,13 +713,7 @@ export class CompetitionJobs {
       try {
         const host = isIP(pod.status.podIP) === 6 ? `[${pod.status.podIP}]` : pod.status.podIP
         const response = await this.exporter(`http://${host}:8765/status`, this.token(jobId), 'GET') as any
-        const progress = response?.progress
-        if (progress && ['dependencies', 'notebook', 'score', 'resolve', 'verify'].includes(progress.phase) &&
-          Number.isSafeInteger(progress.cell) && progress.cell >= -1 && progress.cell <= 100000 &&
-          Number.isSafeInteger(progress.cells) && progress.cells >= 0 && progress.cells <= 100000 &&
-          Number.isSafeInteger(progress.outputBytes) && progress.outputBytes >= 0 &&
-          progress.outputBytes <= Number.MAX_SAFE_INTEGER)
-          status.progress = progress as CompetitionJobProgress
+        status.progress = jobProgress(intent, response?.progress)
       } catch { /* sidecar may still be starting; Pod termination remains authoritative */ }
     }
     return status

@@ -45,6 +45,13 @@ export interface CompetitionJobIntent {
   gpu?: true
   limits: CompetitionJobLimits
 }
+/**
+ * How far a running job has got, for the page that shows it: advisory, since
+ * the job's own phase says how it ends. `dependencies` is a notebook's package
+ * set being installed and `notebook` its cells running (cell -1 before the
+ * first); `resolve` and `verify` are a package preparation, `outputBytes` what
+ * it has downloaded. No job reports `score`: the metric writes no progress.
+ */
 export interface CompetitionJobProgress { phase: 'dependencies' | 'notebook' | 'score' | 'resolve' | 'verify'; cell: number; cells: number; outputBytes: number }
 export interface CompetitionJobStatus {
   jobId: string
@@ -118,6 +125,18 @@ export function parseCompetitionJobIntent(value:unknown):CompetitionJobIntent {
 
 const phases: ReadonlySet<CompetitionJobStatus['phase']> = new Set(['queued','running','exporting','complete','failed','cancelled'])
 const progressPhases: ReadonlySet<CompetitionJobProgress['phase']> = new Set(['dependencies','notebook','score','resolve','verify'])
+/**
+ * One progress sample as it crosses the wire: these four fields and no other.
+ * The broker builds it from what a job's Pod wrote (competition-jobs.ts ·
+ * jobProgress) and checks it here before sending it, so the two ends hold one
+ * definition and the app never meets a sample its parser refuses.
+ */
+export function parseCompetitionJobProgress(value:unknown):CompetitionJobProgress {
+ if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid competition job progress')
+ const p=value as Record<string,unknown>
+ if(Object.keys(p).some(k=>!['phase','cell','cells','outputBytes'].includes(k))||typeof p.phase!=='string'||!progressPhases.has(p.phase as CompetitionJobProgress['phase'])||!integer(p.cell,-1,100000)||!integer(p.cells,0,100000)||!integer(p.outputBytes,0,Number.MAX_SAFE_INTEGER))throw new Error('Invalid competition job progress')
+ return p as unknown as CompetitionJobProgress
+}
 export function parseCompetitionJobStatus(value:unknown):CompetitionJobStatus {
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid competition job status')
  const v=value as Record<string,unknown>
@@ -126,11 +145,7 @@ export function parseCompetitionJobStatus(value:unknown):CompetitionJobStatus {
   const f=v.failure
   if(!f||typeof f!=='object'||Array.isArray(f)||Object.keys(f).some(k=>!['code','resource'].includes(k))||!['unschedulable','image_unavailable','runtime_unavailable','export_failed'].includes((f as Record<string,unknown>).code as string)||((f as Record<string,unknown>).resource!==undefined&&!['memory','cpu','storage','gpu','other'].includes((f as Record<string,unknown>).resource as string)))throw new Error('Invalid competition job failure')
  }
- if(v.progress!==null){
-  if(!v.progress||typeof v.progress!=='object'||Array.isArray(v.progress))throw new Error('Invalid competition job progress')
-  const p=v.progress as Record<string,unknown>
-  if(Object.keys(p).some(k=>!['phase','cell','cells','outputBytes'].includes(k))||typeof p.phase!=='string'||!progressPhases.has(p.phase as CompetitionJobProgress['phase'])||!integer(p.cell,-1,100000)||!integer(p.cells,0,100000)||!integer(p.outputBytes,0,Number.MAX_SAFE_INTEGER))throw new Error('Invalid competition job progress')
- }
+ if(v.progress!==null)parseCompetitionJobProgress(v.progress)
  return v as unknown as CompetitionJobStatus
 }
 export function parseCompetitionJobCollection(value:unknown):CompetitionJobCollection {

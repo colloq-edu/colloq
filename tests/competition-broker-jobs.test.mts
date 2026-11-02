@@ -123,14 +123,15 @@ test('status follows main termination, and collection is authenticated and bound
   const requests: any[] = []
   const { jobs, objects, calls } = setup(async (url, token, method, payload) => {
     requests.push({ url, token, method, payload })
-    return method === 'GET' ? { progress: { phase: 'notebook', cell: 2, cells: 3, outputBytes: 42 } }
+    // The harness's line as it writes it (Runner.beat); the whole way is in competition-progress-contract.test.mts.
+    return method === 'GET' ? { progress: { phase: 'cell', cell: 2, cells: 3, elapsed: 4.2, outputBytes: 42, outputTruncated: false, attemptId } }
       : { files: [{ name: 'run.json', bytes: 3, sha256: 'f'.repeat(64) }], totalBytes: 3 }
   })
   await jobs.start(jobId, intent('notebook'))
   const key = `/api/v1/namespaces/colloq/pods/colloq-job-${jobId}`
   const pod = objects.get(key)
   pod.status = { podIP: '10.0.0.8', containerStatuses: [{ name: 'main', state: { running: { startedAt: new Date().toISOString() } } }] }
-  assert.equal((await jobs.status(jobId)).progress?.cell, 2)
+  assert.deepEqual((await jobs.status(jobId)).progress, { phase: 'notebook', cell: 2, cells: 3, outputBytes: 42 })
   await assert.rejects(() => jobs.collect(jobId), /running/i)
   pod.status.containerStatuses[0].state = { terminated: { exitCode: 0, finishedAt: new Date().toISOString() } }
   assert.equal((await jobs.status(jobId)).phase, 'exporting')

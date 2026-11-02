@@ -544,12 +544,13 @@ turn the built frontend into a development bundle.
 | `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
 
 Precompression adds Brotli quality 11 and gzip level 9 files alongside
-JavaScript, CSS and the PDF worker. The server selects an accepted encoding at
-the original URL and sends the stored bytes, avoiding compression work on each
-download. Unsupported clients and `FAST=1` builds use the original delivery
-path, where the server compresses each asset per request: 11.6 ms of CPU and
-25 KB more on the wire for the largest chunk, once per student. `make host`
-warns when it is about to publish a build with no precompressed files.
+JavaScript, CSS, the PDF worker and plotly.js. The server selects an accepted
+encoding at the original URL and sends the stored bytes, avoiding compression
+work on each download. Unsupported clients and `FAST=1` builds use the original
+delivery path, where the server compresses each asset per request: 11.6 ms of
+CPU and 25 KB more on the wire for the largest chunk, once per student.
+`make host` warns when it is about to publish a build with no precompressed
+files.
 HTML retains revalidation; hashed assets retain their one-year cache.
 Production Docker images and release CI use the precompressed build by default.
 `npm run perf` checks the bundle budgets for either mode. For complete cold entry

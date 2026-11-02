@@ -12,6 +12,7 @@ import { serverMessages } from '../shared/locales/server'
 import { activityMessages } from '../shared/locales/activity'
 import { competitionsMessages } from '../shared/locales/competitions'
 import { collectEntryMessages, collectClientKeys } from './scripts/entry-messages'
+import { PRELOAD_MANIFEST, type PreloadManifest } from './scripts/preload-manifest'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
 /*
@@ -250,15 +251,37 @@ const PRELOAD_HELPERS =
  *    anyway;
  *  - the room chunks are warmed with fetchpriority=low: they are needed after
  *    the form, not instead of it. Their composition is computed from the
- *    build, not listed by hand.
+ *    build, not listed by hand;
+ *  - the same lists, per route and language, are written beside the build
+ *    (scripts/preload-manifest.ts), so the perf harness costs a route by what
+ *    it really fetches instead of guessing it back out of the scripts.
  */
 function firstPaint(): Plugin {
   let base = '/'
+  /** The lists the last page transform wrote into the head, emitted beside the build. */
+  let manifest: PreloadManifest | null = null
   return {
     name: 'colloq-first-paint',
     apply: 'build',
     configResolved(config) {
       base = config.base
+    },
+    buildStart() {
+      // A watched rebuild must not emit the previous build's lists.
+      manifest = null
+    },
+    generateBundle: {
+      // After Vite's own HTML plugin: the page transform below runs inside its
+      // generateBundle, and the lists exist only once it has.
+      order: 'post',
+      handler() {
+        if (!manifest) return
+        this.emitFile({
+          type: 'asset',
+          fileName: PRELOAD_MANIFEST,
+          source: JSON.stringify(manifest, null, 2) + '\n',
+        })
+      },
     },
     transformIndexHtml: {
       order: 'post',
@@ -331,14 +354,17 @@ function firstPaint(): Plugin {
           }
           return [...seen.values()]
         }
-        /** The stylesheets of these chunks, except those the page already names. */
-        const styles = (list: Chunk[]): string[] => [
+        /** Every stylesheet these chunks import. */
+        const css = (list: Chunk[]): string[] => [
           ...new Set(list.flatMap((chunk) => [...(chunk.viteMetadata?.importedCss ?? [])])),
-        ].filter((file) => !out.includes(`href="${base}${file}"`))
+        ]
+        /** The stylesheets of these chunks, except those the page already names. */
+        const styles = (list: Chunk[]): string[] =>
+          css(list).filter((file) => !out.includes(`href="${base}${file}"`))
         /** The area's dictionary in each language: the script in the head picks one. */
-        const speaks = (area: string, files: string[]): Record<string, string[]> =>
+        const speaks = (area: string, files: string[]): Record<Locale, string[]> =>
           Object.fromEntries(LOCALES.map((locale) =>
-            [locale, [...files, base + need(`${area}-${locale}`).fileName]]))
+            [locale, [...files, base + need(`${area}-${locale}`).fileName]])) as Record<Locale, string[]>
 
         /*
          * The entry goes FIRST in the document. The room script used to stand
@@ -351,11 +377,18 @@ function firstPaint(): Plugin {
          * stood between the entry chunk and the screen.
          */
         const entry = reach([need('App')])
+        const entryStyles = css(entry)
         out = out.replace('</head>', [
           ...entry.map((chunk) => `<link rel="modulepreload" crossorigin href="${base}${chunk.fileName}">`),
           ...styles(entry).map((file) =>
             `<link rel="preload" as="style" href="${base}${file}" onload="this.rel='stylesheet'">`),
         ].join('') + '</head>')
+        const entryFiles = new Set(entry.map((chunk) => chunk.fileName))
+        /** These chunks and their stylesheets, past what the form already fetched. */
+        const past = (list: Chunk[]): string[] => [
+          ...list.filter((chunk) => !entryFiles.has(chunk.fileName)).map((chunk) => base + chunk.fileName),
+          ...styles(list).map((file) => base + file),
+        ]
 
         /*
          * The room. Its composition is computed from the build: the screen and
@@ -369,30 +402,52 @@ function firstPaint(): Plugin {
          * warm them after paint, while typing, instead of waiting for /join
          * and then document sync to start the editor's download.
          */
-        const entryFiles = new Set(entry.map((chunk) => chunk.fileName))
-        const room = reach([need(ROOM_CHUNK), ...ROOM_ALSO.map(need)])
-        const roomFiles = [
-          ...room.filter((chunk) => !entryFiles.has(chunk.fileName)).map((chunk) => base + chunk.fileName),
-          ...styles(room).map((file) => base + file),
-        ]
-        out = out.replace('</head>',
-          `<script data-colloq-room-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
-            `let known=false;try{known=!!(room&&JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token)}catch{}` +
-            `${PRELOAD_HELPERS}const files=${JSON.stringify(speaks('room', roomFiles))};` +
-            `let warmed=false;const warm=()=>{if(!room||warmed)return;warmed=true;` +
-            `for(const f of files[lang])add(f,"low")};` +
-            `if(known)warm();else window.addEventListener("colloq:ready",warm,{once:true})})()</script></head>`)
+        const room = speaks('room', past(reach([need(ROOM_CHUNK), ...ROOM_ALSO.map(need)])))
 
         // These routes have no join form. Fetch their code and catalog together
         // now, while loadLocalizedScreen still controls evaluation order.
-        const route = (area: string, names: string[]) => speaks(area, names.flatMap((name) => {
-          const chunk = byName.get(name)
-          return chunk ? [base + chunk.fileName, ...styles([chunk]).map((file) => base + file)] : []
-        }))
+        const named = (names: string[]): Chunk[] =>
+          names.flatMap((name) => byName.get(name) ?? [])
+        const route = (area: string, names: string[]) => speaks(area, named(names).flatMap((chunk) =>
+          [base + chunk.fileName, ...styles([chunk]).map((file) => base + file)]))
+        /*
+         * What the screen costs is more than what the head names: importing
+         * it fetches its static imports and their stylesheets too, a wave
+         * later. The manifest carries both, the head only the first.
+         */
+        const screen = (area: string, names: string[]) => ({
+          preload: route(area, names),
+          fetch: speaks(area, past(reach(named(names)))),
+        })
+        manifest = {
+          version: 1,
+          entry: [
+            ...entry.map((chunk) => base + chunk.fileName),
+            ...entryStyles.map((file) => base + file),
+          ],
+          routes: {
+            room: { paths: ['/s/:id'], warm: 'after-form-unless-known', preload: room, fetch: room },
+            admin: { paths: ['/', '/admin'], warm: 'at-once', ...screen('admin', ['AdminScreen']) },
+            reader: {
+              paths: ['/c/:id', '/p/:id'],
+              warm: 'at-once',
+              ...screen('reader', ['ReaderScreen', 'render']),
+            },
+          },
+        }
+        const { routes } = manifest
+
+        out = out.replace('</head>',
+          `<script data-colloq-room-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
+            `let known=false;try{known=!!(room&&JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token)}catch{}` +
+            `${PRELOAD_HELPERS}const files=${JSON.stringify(routes.room.preload)};` +
+            `let warmed=false;const warm=()=>{if(!room||warmed)return;warmed=true;` +
+            `for(const f of files[lang])add(f,"low")};` +
+            `if(known)warm();else window.addEventListener("colloq:ready",warm,{once:true})})()</script></head>`)
         out = out.replace('</head>', `<script data-colloq-route-preload>(()=>{` +
           `const p=location.pathname;${PRELOAD_HELPERS}` +
-          `const files=/^\\/(?:admin(?:\\/|$)|$)/.test(p)?${JSON.stringify(route('admin', ['AdminScreen']))}:` +
-          `/^\\/(?:c|p)\\//.test(p)?${JSON.stringify(route('reader', ['ReaderScreen', 'render']))}:null;` +
+          `const files=/^\\/(?:admin(?:\\/|$)|$)/.test(p)?${JSON.stringify(routes.admin.preload)}:` +
+          `/^\\/(?:c|p)\\//.test(p)?${JSON.stringify(routes.reader.preload)}:null;` +
           `if(files)for(const f of files[lang])add(f)})()</script></head>`)
         return out
       },

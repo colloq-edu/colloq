@@ -9,7 +9,7 @@ import * as sync from 'y-protocols/sync'
 import { createSession, isFinished, setRules, db } from '../server/src/db.js'
 import { createTeacher, rotateLinkKey, deleteTeacher } from '../server/src/admin/store.js'
 import { addRoomTeacher } from '../server/src/admin/access.js'
-import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { issueStaffCookie, staffFromCookieHeader } from '../server/src/admin/auth.js'
 import { signToken, verifyToken, signHandoffToken, verifyHandoffToken } from '../server/src/auth.js'
 import { roleFor } from '../server/src/routes/sessions.js'
 import { handleControlSocket, closeControlRoom } from '../server/src/control.js'
@@ -37,7 +37,7 @@ for (const action of ['remove', 'rotate', 'external-rotate'] as const) test(`sta
   addRoomTeacher(id, teacher.id, null)
   let cookie = ''
   issueStaffCookie({cookie:(name:string,value:string)=>{cookie=`${name}=${value}`}} as any, teacher)
-  const payload = {sessionId:id,participantId:'temporary',role:roleFor(cookie,{sessionId:id,participantId:'temporary'})}
+  const payload = {sessionId:id,participantId:'temporary',role:roleFor(staffFromCookieHeader(cookie),{sessionId:id,participantId:'temporary'})}
   const credentials = {cookieHeader:cookie,payload}
   assert.equal(payload.role, 'host')
   const control = new Socket(), notebook = new Socket(), file = new Socket()

@@ -281,7 +281,7 @@ function as(sessionId: string, participantId: string): Record<string, string> {
 }
 
 /** The same thing the room door and every handshake ask the ban. */
-const stopped = (id: string, participantId: string) => banFor(id, participantId, undefined)
+const stopped = (id: string, participantId: string) => banFor(id, participantId, null, null)
 
 test('lifting a ban lets the person back in', async () => {
   const base = await listening()

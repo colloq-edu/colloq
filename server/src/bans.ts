@@ -19,8 +19,7 @@ import { tr } from '@shared/i18n'
  */
 import crypto from 'node:crypto'
 import type { Request, Response } from 'express'
-import { staffFromCookieHeader } from './admin/auth.js'
-import { canSeeRoom } from './admin/access.js'
+import { canSeeRoom, type StaffLike } from './admin/access.js'
 import { db, deviceOfParticipant, getParticipant, isTokenHost } from './db.js'
 import { clientAddress, type RequestLike } from './net/inbound.js'
 import type { Ban } from '@shared/protocol'
@@ -250,15 +249,21 @@ export interface BanInForce {
  * (admin/access.ts · canSeeRoom): a teacher of another course who dropped in
  * by the link is a participant here, and the host's ban holds for them like
  * for anyone.
+ *
+ * `staff` is the account the knock speaks for as its door decided it, the
+ * same one `roleFor` gets (authorization.ts): the person a sign-in proxy
+ * vouches for outranks a cookie a shared browser kept, so a student banned
+ * on the teacher's lab computer is not let through on the teacher's cookie.
+ * `device` is the browser's own mark (`deviceOf`): it says which browser
+ * this is and grants nothing, so it comes from the header the browser sent.
  */
 export function banFor(
   sessionId: string,
   participantId: string | null,
-  cookieHeader: string | undefined,
+  staff: StaffLike | null | undefined,
+  device: string | null,
 ): BanInForce | null {
-  const staff = staffFromCookieHeader(cookieHeader)
   if (staff && canSeeRoom(staff, sessionId)) return null
-  const device = deviceOf(cookieHeader)
   // Nothing to present means nothing to catch: this is a clean browser, and it
   // gets through. The hole is named out loud in the file header.
   if (!participantId && !device) return null

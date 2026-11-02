@@ -3877,6 +3877,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Оракул уже выполняет поручение в этой комнате. Дождитесь его конца или остановите его, а потом отправьте новое.",
     "en": "The oracle is already carrying out a request in this room. Wait for it to finish, or stop it, and then send a new one."
   },
+  "server.agent.rightsWithdrawn": {
+    "ru": "Права преподавателя в этой комнате отозваны, и поручение остановлено. Сделанное выше осталось сделанным.",
+    "en": "The teacher's rights in this room were withdrawn, so the request was stopped. What was done above stands."
+  },
   "server.agent.prompt.role": {
     "ru": "Вы — оракул Colloq, помощник на техническом занятии. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.",
     "en": "You are the Colloq oracle, an assistant in a technical class. You have been asked not to explain, but to DO."

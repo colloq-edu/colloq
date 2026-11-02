@@ -6,9 +6,9 @@
     shaOfAttachment,
     type TextEdit,
   } from '@shared/images'
-  import { askFiles, fileSrc, forgetFileSrc, pathOfFileSrc } from '@/lib/note-files.svelte'
+  import { askFiles, fileSrc, filesReconnected, forgetFileSrc, pathOfFileSrc } from '@/lib/note-files.svelte'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
-  import { getSessionState } from '@/lib/session.svelte'
+  import { getSessionState, type SessionState } from '@/lib/session.svelte'
   import { cn } from '@/lib/utils'
   import { askTicket, blobSrc, forgetBlobSrc } from './CellOutputs.svelte'
 
@@ -38,11 +38,13 @@
    * the ROOM's shelf, and without the room the link to them stays in the text
    * as it is.
    */
+  let session: SessionState | null = null
   let room: { id: string; token: string } | null = null
   try {
-    const session = getSessionState()
+    session = getSessionState()
     room = { id: session.session.id, token: session.token }
   } catch {
+    session = null
     room = null
   }
   if (room) askTicket(room.id, room.token)
@@ -91,6 +93,25 @@
     return applyEdits(text, edits)
   }
 
+  /** The folder images this note shows, as paths in the room. */
+  const images = $derived(room ? findWorkspaceImages(source ?? '').map((ref) => ref.path) : [])
+
+  /*
+   * Which of them the room's folder lists right now: what lifts a "no such
+   * file" once the teacher puts the figure in (lib/note-files.svelte.ts ·
+   * askFiles). A string, so that the effect re-runs when THIS changes, not on
+   * every autosave elsewhere in the tree; a file that is only on the class's
+   * machine is not here to be served.
+   */
+  const listed = $derived.by(() => {
+    if (!session || images.length === 0) return ''
+    const wanted = new Set(images)
+    return session.files
+      .filter((entry) => !entry.dir && !entry.onMachine && wanted.has(entry.path))
+      .map((entry) => entry.path)
+      .join('\0')
+  })
+
   /*
    * Tickets for files — from an effect, not from `withImages`.
    *
@@ -98,13 +119,27 @@
    * from `$derived`: doing either in the middle of a computation is a way to
    * get a re-render inside a re-render. The effect re-runs on a text edit, so
    * an image added to a cell live is found the same way as when the room is
-   * opened.
+   * opened — and when a failed request's wait is over (askFiles subscribes it).
    */
   $effect(() => {
     const here = room
-    if (!here) return
-    const paths = findWorkspaceImages(source ?? '').map((ref) => ref.path)
-    if (paths.length > 0) askFiles(here.id, here.token, paths)
+    if (!here || images.length === 0) return
+    const there = new Set(listed.split('\0'))
+    askFiles(here.id, here.token, images, (path) => there.has(path))
+  })
+
+  /*
+   * And the connection coming back: a ticket asked while the network was down
+   * failed in transit, not because of the file, and it is asked again at once
+   * rather than after the rest of its wait. On the return only, not whenever a
+   * note mounts in a connected room: cells are built as they scroll into
+   * view, and each would cut every wait in the room short.
+   */
+  let online = true
+  $effect(() => {
+    const now = session?.connected ?? false
+    if (room && now && !online) filesReconnected(room.id)
+    online = now
   })
 
   const render = $derived(renderers())
@@ -134,7 +169,9 @@
     // And the same for a file from the folder: its ticket lives the same five
     // minutes.
     const path = pathOfFileSrc(here.id, src)
-    if (path && forgetFileSrc(here.id, path)) askFiles(here.id, here.token, [path])
+    if (!path || !forgetFileSrc(here.id, path)) return
+    const there = new Set(listed.split('\0'))
+    askFiles(here.id, here.token, [path], (one) => there.has(one))
   }
 </script>
 

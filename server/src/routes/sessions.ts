@@ -2,7 +2,7 @@ import { roleFor } from '../authorization.js'
 import { tr } from '@shared/i18n'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { kernelRetirementInProgress } from '../kernel/retirement.js'
-import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
+import { currentStaff } from '../admin/auth.js'
 import { addRoomTeacher, canSeePublication, canSeeRoom, staffById, staffGuestFor } from '../admin/access.js'
 import { recordAdminEvent } from '../admin/audit-log.js'
 import {
@@ -363,7 +363,7 @@ export function banDoor(req: Request, res: Response, next: NextFunction): void {
   }
   const payload = bearerFor(req)
   if (!payload) return next()
-  const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)
+  const ban = banFor(payload.sessionId, payload.participantId, currentStaff(req), deviceOf(req.headers.cookie))
   if (!ban) return next()
   res.status(403).json(banRefusal(ban))
 }
@@ -372,13 +372,20 @@ export function banDoor(req: Request, res: Response, next: NextFunction): void {
  * Bearer credential that must belong to the `:id` in the path. Lives here
  * because this module mints the tokens; the file and AI routes import it.
  *
- * A staff cookie outranks the role the token was minted with — the same rule
- * the WebSocket upgrade applies in effectiveRole(), and it has to be the same
- * rule or the product answers one question two ways. It did: a teacher who
- * opened the seminar link before signing in holds a participant token for a
- * room that is theirs, and while the sockets let them interrupt the kernel, the
- * HTTP side refused them a checkpoint, a restore and the thread's own eraser.
- * Same person, same browser, same second, two answers.
+ * The staff account the request speaks for outranks the role the token was
+ * minted with — the same rule the WebSocket upgrade applies in
+ * effectiveRole(), and it has to be the same rule or the product answers one
+ * question two ways. It did: a teacher who opened the seminar link before
+ * signing in holds a participant token for a room that is theirs, and while
+ * the sockets let them interrupt the kernel, the HTTP side refused them a
+ * checkpoint, a restore and the thread's own eraser. Same person, same
+ * browser, same second, two answers.
+ *
+ * That account is `currentStaff(req)`, never the request's raw Cookie header:
+ * behind a sign-in proxy the person it vouches for is who is here, whatever
+ * cookie a shared browser kept from the one before (sso/identity.ts). The
+ * socket door reads the header the proxy rewrote for the same reason, so the
+ * two still give one identity one answer.
  *
  * Re-read per request rather than baked into the token, so signing out of the
  * teaching side takes the powers with it on the next call.
@@ -386,6 +393,7 @@ export function banDoor(req: Request, res: Response, next: NextFunction): void {
 export function sessionAuth(req: Request): TokenPayload | null {
   const payload = bearerFor(req)
   if (!payload) return null
+  const staff = currentStaff(req)
   /*
    * A banned person does not get through here either.
    *
@@ -398,19 +406,19 @@ export function sessionAuth(req: Request): TokenPayload | null {
    * below answers with words about the ban; this is here so that a route
    * that forgot to hang it still does not let them in.
    */
-  if (banFor(payload.sessionId, payload.participantId, req.headers.cookie)) return null
+  if (banFor(payload.sessionId, payload.participantId, staff, deviceOf(req.headers.cookie))) return null
   /*
    * The role is decided here, on every request, and never read from the token.
    *
    * It used to be baked in at join time, which made `host` permanent: a teacher
    * removed from the staff list kept Restart, Clear and Restore in every room
-   * they had ever opened, because their old token still said so. The cookie is
-   * the only thing that can be taken away, so it is the only thing that grants.
-   * The one exception is a seminar created straight against the API, where a
-   * host token is the only credential there is — that is minted host and stays
-   * host, and it is the path no browser walks.
+   * they had ever opened, because their old token still said so. The staff
+   * sign-in is the only thing that can be taken away, so it is the only thing
+   * that grants. The one exception is a seminar created straight against the
+   * API, where a host token is the only credential there is — that is minted
+   * host and stays host, and it is the path no browser walks.
    */
-  return { ...payload, role: roleFor(req.headers.cookie, payload) }
+  return { ...payload, role: roleFor(staff, payload) }
 }
 
 /**
@@ -488,19 +496,20 @@ export function sessionRoutes(): Router {
       return res.json(nobody)
     }
 
-    const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)
-    const role = ban ? null : roleFor(req.headers.cookie, payload)
+    // The same account every other door of the room asks (see sessionAuth).
+    const signedIn = currentStaff(req)
+    const ban = banFor(payload.sessionId, payload.participantId, signedIn, deviceOf(req.headers.cookie))
+    const role = ban ? null : roleFor(signedIn, payload)
     // A staff member who does not teach this room is told why they are a
     // participant here (shared/protocol.ts · StaffGuest). Asked only then:
     // this door is hit by every reconnecting tab.
-    const guest =
-      role === 'participant' ? staffGuestFor(staffFromCookieHeader(req.headers.cookie), sessionId) : null
+    const guest = role === 'participant' ? staffGuestFor(signedIn, sessionId) : null
     const me: SessionMe = {
       tokenValid: true,
       ban: ban ? { until: ban.until } : null,
       participantId: payload.participantId,
       // The role is the one the server will act with on this key right now
-      // (the cookie beats the token, see roleFor). A banned person has none:
+      // (a staff sign-in beats the token, see roleFor). A banned person has none:
       // they can do nothing, and calling them the host would be untrue.
       role,
       ...(guest ? { staffGuest: guest } : {}),
@@ -746,7 +755,7 @@ export function sessionRoutes(): Router {
      * instead of "the teacher has closed your access" means understanding
      * nothing.
      */
-    const ban = banFor(sessionId, known?.id ?? null, req.headers.cookie)
+    const ban = banFor(sessionId, known?.id ?? null, signedIn, deviceOf(req.headers.cookie))
     if (ban) {
       console.log(
         `[join ${sessionId}] banned ${known ? known.id : 'by device'} · until ${ban.until}`,

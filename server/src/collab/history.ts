@@ -1008,41 +1008,64 @@ export function discardBurst(sessionId: string): void {
  * would pay again for versions already visited. Entries are dropped when the
  * session's history grows, since a new version cannot change an old one but a
  * restore can add rows that shift what "latest" means.
+ *
+ * Bounded by weight as well as by count. Sixty-four entries are sixty-four
+ * copies of a notebook's text, and for a two-megabyte notebook that is a
+ * quarter of a gigabyte held because someone scrolled the feed (the 3 Nov 2026
+ * audit measured ~170 MB of growth walking 64 versions of one). So the entries
+ * share a budget, a version too heavy for a quarter of it is rebuilt every
+ * time rather than pushing out everything else, and a hit counts as use: the
+ * Map's order is the order of last use, oldest first.
  */
-const rebuilt = new Map<string, { cells: HistoricCell[]; at: number }>()
+const rebuilt = new Map<string, { cells: HistoricCell[]; bytes: number }>()
 const CACHE_MAX = 64
+const CACHE_BYTES = 32 * 1024 * 1024
+let cachedBytes = 0
+
+/** What a version weighs in memory: strings are UTF-16, and every cell is a few objects. */
+function weigh(cells: HistoricCell[]): number {
+  let bytes = 0
+  for (const cell of cells) bytes += 2 * (cell.id.length + cell.source.length) + 96
+  return bytes
+}
 
 export function cellsAt(sessionId: string, seq: number): HistoricCell[] {
   const key = `${sessionId}:${seq}`
   const hit = rebuilt.get(key)
-  if (hit) return hit.cells
+  if (hit) {
+    rebuilt.delete(key)
+    rebuilt.set(key, hit)
+    return hit.cells
+  }
 
   const doc = docFrom(updatesUpTo(sessionId, seq))
   const cells = cellsOf(doc)
   doc.destroy()
 
-  if (rebuilt.size >= CACHE_MAX) {
-    // Oldest first. A seminar visits versions in bursts of interest, so the
-    // ones worth keeping are the ones touched most recently.
-    let oldestKey: string | null = null
-    let oldest = Infinity
-    for (const [k, v] of rebuilt) {
-      if (v.at < oldest) {
-        oldest = v.at
-        oldestKey = k
-      }
-    }
-    if (oldestKey) rebuilt.delete(oldestKey)
+  const bytes = weigh(cells)
+  if (bytes > CACHE_BYTES / 4) return cells
+  while (rebuilt.size > 0 && (rebuilt.size >= CACHE_MAX || cachedBytes + bytes > CACHE_BYTES)) {
+    const [oldest, entry] = rebuilt.entries().next().value!
+    rebuilt.delete(oldest)
+    cachedBytes -= entry.bytes
   }
-  rebuilt.set(key, { cells, at: Date.now() })
+  rebuilt.set(key, { cells, bytes })
+  cachedBytes += bytes
   return cells
 }
 
 /** Forget everything cached for a session — after a restore, or a delete. */
 export function forgetCache(sessionId: string): void {
-  for (const key of [...rebuilt.keys()]) {
-    if (key.startsWith(`${sessionId}:`)) rebuilt.delete(key)
+  for (const [key, entry] of [...rebuilt]) {
+    if (!key.startsWith(`${sessionId}:`)) continue
+    rebuilt.delete(key)
+    cachedBytes -= entry.bytes
   }
+}
+
+/** What the cache holds, for tests: its keys from least to most recently used, and their weight. */
+export function historyCache(): { keys: string[]; bytes: number } {
+  return { keys: [...rebuilt.keys()], bytes: cachedBytes }
 }
 
 /* -------------------------------------------------------------------- diff */

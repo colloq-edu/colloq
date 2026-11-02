@@ -19,7 +19,7 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Request, Response } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
-import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { issueStaffCookie, staffFromCookieHeader } from '../server/src/admin/auth.js'
 import { signHostToken, verifyHostToken } from '../server/src/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { addRoomTeacher } from '../server/src/admin/access.js'
@@ -429,7 +429,7 @@ test('joining over HTTP and over the socket give the same answer', async () => {
   for (const { who, id, cookie, expect } of cases) {
     const token = signToken({ sessionId: ROOM, participantId: id, role: 'participant' })
     const overHttp = sessionAuth(request(token, cookie))?.role
-    const overSocket = roleFor(cookie, { sessionId: ROOM, participantId: id })
+    const overSocket = roleFor(staffFromCookieHeader(cookie), { sessionId: ROOM, participantId: id })
     assert.equal(overHttp, overSocket, `the joins disagree: ${who}`)
     // And it is not "both always participant" — otherwise the agreement is
     // worth nothing.

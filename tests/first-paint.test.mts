@@ -198,6 +198,35 @@ test('the built page carries no comments, and the source keeps every one of them
   assert.ok(source.includes('<!--'), 'the source page explains itself to whoever edits it')
 })
 
+// The perf harness costs each route from the manifest, so it must be the
+// head's own lists, route by route and language by language, not a copy that
+// can drift from them; and what a route fetches can only add to what it warms.
+test('the preload manifest names exactly what the head asks for on each route', () => {
+  const source = '<html><head><link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" crossorigin>' +
+    '<link rel="stylesheet" crossorigin href="/assets/index-test.css"></head><body></body></html>'
+  assert.equal(plugin.transformIndexHtml.handler(source, { bundle }), html)
+  const emitted: Array<{ type: string; fileName: string; source: string }> = []
+  plugin.generateBundle.handler.call({ emitFile: (file: (typeof emitted)[number]) => emitted.push(file) })
+  assert.deepEqual(emitted.map((file) => [file.type, file.fileName]), [['asset', '.vite/colloq-preload.json']])
+  const manifest = JSON.parse(emitted[0].source)
+  assert.deepEqual(manifest.entry, ['/assets/App-test.js', '/assets/index-test.js', '/assets/App-test.css'])
+  const code = (files: string[]) => files.filter((file) => !file.startsWith('/fonts/'))
+  for (const lang of ['ru', 'en']) {
+    const { room, admin, reader } = manifest.routes
+    assert.deepEqual(code(downloads('/s/room1', null, false, true, lang)), room.preload[lang])
+    assert.deepEqual(code(downloads('/s/room1', '{"room1":{"token":"t"}}', false, false, lang)), room.preload[lang])
+    assert.deepEqual(downloads('/admin', null, false, false, lang), admin.preload[lang])
+    assert.deepEqual(code(downloads('/c/course', null, false, false, lang)), reader.preload[lang])
+    for (const route of [room, admin, reader]) {
+      for (const file of route.preload[lang]) assert.ok(route.fetch[lang].includes(file), file)
+    }
+    const other = lang === 'ru' ? 'en' : 'ru'
+    const strangers = room.fetch[lang].filter((file: string) =>
+      /AdminScreen|ReaderScreen|\/admin-|\/reader-/.test(file) || file.includes(`room-${other}`))
+    assert.deepEqual(strangers, [], `the room in ${lang} lists another route's files or the other language's`)
+  }
+})
+
 // A chunk was renamed — the build must fail rather than silently bring back
 // the extra network round that is removed here.
 test('a renamed chunk fails the build instead of silently losing a preload', () => {

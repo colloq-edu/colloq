@@ -1,5 +1,5 @@
 import { tr } from '@shared/i18n'
-import { COMPETITION_GPU_SLOTS_MAX, COMPETITION_JOB_ID, parseCompetitionJobIntent, parseCompetitionJobStatus, parseCompetitionJobCollection, type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
+import { COMPETITION_GPU_SLOTS_MAX, COMPETITION_JOB_ID, parseCompetitionJobIntent, parseCompetitionJobProgress, parseCompetitionJobStatus, parseCompetitionJobCollection, type CompetitionJobCollection, type CompetitionJobIntent, type CompetitionJobStatus } from '@shared/competition-runtime'
 /** The web process sends room intent; it never forwards a container specification. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -77,10 +77,36 @@ function object(value: unknown): Record<string, unknown> {
 }
 function competitionStatus(value: unknown, expected?: string): CompetitionJobStatus {
   try {
-    const row=parseCompetitionJobStatus(value)
+    const row=parseCompetitionJobStatus(withoutUnreadableProgress(value))
     if (expected && row.jobId!==expected) throw new Error('identity')
     return row
   } catch { throw new RuntimeRequestError('Invalid competition job status or identity') }
+}
+let progressRefusedAt=-Infinity
+/**
+ * A job status whose progress the app cannot read, as the same status without
+ * it. Progress only feeds the page's "cell 9 of 14", while a status this
+ * client refuses ends the poll, and the poll's caller cancels the job. A
+ * broker from before audit F03 forwards the harness's install line whole: an
+ * app upgraded ahead of its broker would otherwise go on cancelling every
+ * submission caught installing its package set. The sample is still refused
+ * (the parser stays the contract) and the rest of the status stays as strict
+ * as ever: an identity, phase or exit code out of the contract still fails
+ * the poll. Logged once a minute at most: a broker that sends such a sample
+ * sends it on every poll.
+ */
+function withoutUnreadableProgress(value: unknown): unknown {
+  if (!value || typeof value!=='object' || Array.isArray(value)) return value
+  const row=value as Record<string,unknown>
+  if (row.progress===null || row.progress===undefined) return value
+  try { parseCompetitionJobProgress(row.progress); return value }
+  catch {
+    if (Date.now()-progressRefusedAt>=60_000) {
+      progressRefusedAt=Date.now()
+      console.warn('[competitions] the runtime broker sent job progress the app cannot read; the job goes on without it (is the broker older than the app?)')
+    }
+    return {...row,progress:null}
+  }
 }
 /**
  * The broker route of one of a room's two Pods: the class's, or with `/own`

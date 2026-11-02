@@ -753,7 +753,7 @@ export const CONTEST_LIMITS = {
   timeLimitMs: { min: 100, max: 15_000, default: 1000 },
   /*
    * At least 32 MB: a test's memory is the program's peak, and a forked child
-   * starts at the harness's own size (≈10 MB) — a 16 MB limit would leave a
+   * starts at the harness's own size (≈11 MB) — a 16 MB limit would leave a
    * Python solution no room before its first line.
    */
   memoryMb: { min: 32, max: 2048, default: 256 },

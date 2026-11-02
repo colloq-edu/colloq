@@ -22,7 +22,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MARKDOWN_FORBIDDEN_ATTRS, MARKDOWN_FORBIDDEN_TAGS } from '../web/src/lib/sanitize.js'
+import {
+  MARKDOWN_FORBIDDEN_ATTRS,
+  MARKDOWN_FORBIDDEN_TAGS,
+  noteClasses,
+  noteReference,
+  OUTPUT_FORBIDDEN_ATTRS,
+} from '../web/src/lib/sanitize.js'
 import { safeStyle } from '../shared/note-css.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -81,4 +87,82 @@ test('styling is cleaned BEFORE formulas become markup', () => {
   const source = read('web/src/lib/render.svelte.ts')
   const markdown = source.slice(source.indexOf('markdown(source'), source.indexOf('ansi(text)'))
   assert.ok(markdown.indexOf('safeStyle(') < markdown.indexOf('katex.renderToString'))
+})
+
+/* ------------------------------------------------------------------ names */
+
+test('a note keeps no class the app styles itself with', () => {
+  // The overlay measured on the production build: four utility classes and no
+  // `style` at all, so the property allowlist never saw it.
+  assert.equal(noteClasses('div', 'fixed inset-0 z-[95] bg-canvas'), '')
+  assert.equal(noteClasses('div', 'prose-note table-scroll katex output-stream'), '')
+  assert.equal(noteClasses('code', 'language-js fixed'), 'language-js')
+})
+
+test('the classes the renderer itself writes into the markup survive', () => {
+  // marked marks a fenced block with its language; the oracle's streaming
+  // caret rides in the answer's text. Both are drawn inside the note only.
+  assert.equal(noteClasses('code', 'language-python'), 'language-python')
+  assert.equal(noteClasses('code', 'language-c++'), 'language-c++')
+  assert.equal(noteClasses('span', 'ai-caret'), 'ai-caret')
+  // Only where they are written: on any other element they are someone's.
+  assert.equal(noteClasses('div', 'language-python'), '')
+  assert.equal(noteClasses('div', 'ai-caret'), '')
+})
+
+test('a note refers only to its own names', () => {
+  // The ids themselves are renamed by DOMPurify (SANITIZE_NAMED_PROPS); what
+  // points at them has to follow, or a label, a link and an arrowhead lose
+  // their targets — and, left as they were, could find the page's.
+  assert.equal(noteReference('for', 'answer'), 'user-content-answer')
+  assert.equal(noteReference('aria-describedby', 'a  b'), 'user-content-a user-content-b')
+  assert.equal(noteReference('href', '#part-2'), '#user-content-part-2')
+  assert.equal(noteReference('xlink:href', '#shape'), '#user-content-shape')
+  assert.equal(noteReference('usemap', '#map'), '#user-content-map')
+  assert.equal(noteReference('fill', 'url(#g)'), 'url(#user-content-g)')
+  assert.equal(noteReference('marker-end', "url('#arrow')"), "url('#user-content-arrow')")
+  // Already in the namespace — as DOMPurify itself leaves such an id.
+  assert.equal(noteReference('href', '#user-content-x'), '#user-content-x')
+  assert.equal(noteReference('fill', 'url(#user-content-g)'), null)
+  // Not a name in this page: the top of it, an address elsewhere, a colour.
+  assert.equal(noteReference('href', '#'), null)
+  assert.equal(noteReference('href', 'https://example.com/#x'), null)
+  assert.equal(noteReference('fill', 'red'), null)
+  assert.equal(noteReference('title', 'see #2'), null)
+  assert.equal(noteReference('alt', 'url(#x) in words'), null)
+})
+
+test('nothing in a note opens above the interface or takes the Tab key', () => {
+  // A manual popover covered the room after one click and ignored Escape.
+  for (const attribute of ['popover', 'popovertarget', 'popovertargetaction', 'command', 'commandfor', 'tabindex']) {
+    assert.ok(MARKDOWN_FORBIDDEN_ATTRS.includes(attribute), `${attribute} reaches past the note`)
+  }
+  // `<dialog open>` is absolutely positioned by the browser's own stylesheet.
+  assert.ok(MARKDOWN_FORBIDDEN_TAGS.includes('dialog'))
+})
+
+test("markdown() keeps the page's names out of a note before anything else draws", () => {
+  const source = read('web/src/lib/render.svelte.ts')
+  const markdown = source.slice(source.indexOf('markdown(source'), source.indexOf('ansi(text)'))
+  assert.ok(markdown.includes('ALLOW_DATA_ATTR: false'), 'a note may carry the data-* the notebook finds its cells by')
+  assert.ok(markdown.includes('SANITIZE_NAMED_PROPS: true'), 'a note may carry ids the page looks things up by')
+  // Before KaTeX and the table wrapper add classes of their own, or those go too.
+  assert.ok(markdown.indexOf('noteClasses(') < markdown.indexOf('katex.renderToString'))
+  assert.ok(markdown.indexOf('noteClasses(') < markdown.indexOf("box.className = 'table-scroll'"))
+})
+
+/* ----------------------------------------------------------------- output */
+
+test('kernel output cannot open anything in the top layer', () => {
+  // The shadow root and `contain: paint` hold every box the output lays out;
+  // the top layer is laid out above the page, past both. A manual popover in
+  // a `display(HTML(...))` covered the room after one click.
+  for (const attribute of ['popover', 'popovertarget', 'popovertargetaction', 'command', 'commandfor']) {
+    assert.ok(OUTPUT_FORBIDDEN_ATTRS.includes(attribute), `${attribute} reaches past the output's root`)
+  }
+  // Its stylesheets stay: `df.style` and a figure's own rules are why output has a root at all.
+  assert.ok(!OUTPUT_FORBIDDEN_ATTRS.includes('style') && !OUTPUT_FORBIDDEN_ATTRS.includes('class'))
+  const source = read('web/src/lib/render.svelte.ts')
+  const outputs = source.slice(source.indexOf('html: (markup)'))
+  assert.equal(outputs.match(/FORBID_ATTR: OUTPUT_FORBIDDEN_ATTRS/g)?.length, 2, 'html() or svg() lets the top layer through')
 })

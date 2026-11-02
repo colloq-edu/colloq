@@ -4438,7 +4438,16 @@ export function dispatch(
       // edges, and an empty note is its absence, and the echo must say the
       // same, otherwise the second device keeps a string of spaces where there
       // is no string.
-      toHosts(sessionId, file, { t: 'notes:one', file, page: at, text: text.trim() })
+      const echo: ControlServerMessage = { t: 'notes:one', file, page: at, text: text.trim() }
+      toHosts(sessionId, file, echo)
+      /*
+       * And to the device that wrote it, even with another document's notes
+       * open there, or none yet: a reconnecting tab resends its unconfirmed
+       * edits before it asks for any map, and it lets an edit go only on this
+       * echo (session.svelte.ts · #unsent). It is the sender's own text, so
+       * nothing reaches a screen that did not already hold it.
+       */
+      if (notesOpen.get(ws) !== file) send(ws, echo)
       return
     }
 

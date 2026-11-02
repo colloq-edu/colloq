@@ -304,6 +304,12 @@ export function currentStaff(req: Request): Teacher | null {
 /**
  * The same check against a raw Cookie header. The WebSocket upgrade never sees
  * an express Request, and interrupt/restart have to be answerable there.
+ *
+ * It believes the header it is given, so the header must be one the sign-in
+ * proxy has had its say on: a socket's (sso/identity.ts · socketCookieHeader).
+ * An HTTP request asks `currentStaff` instead; its own `headers.cookie` is
+ * what a shared browser kept from the person before, and reading it here is
+ * how the room's API once made a student host on a teacher's cookie.
  */
 export function staffFromCookieHeader(header: string | undefined): Teacher | null {
   return readStaffCookie(header)?.teacher ?? null
