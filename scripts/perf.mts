@@ -24,6 +24,12 @@ import https from 'node:https'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import WS from 'ws'
+import type { Locale } from '../shared/i18n-types.ts'
+import {
+  PRELOAD_MANIFEST,
+  type PreloadManifest,
+  type PreloadRoute,
+} from '../web/scripts/preload-manifest.ts'
 
 /* ----------------------------------------------------------------- budgets */
 
@@ -54,12 +60,15 @@ const MAX_BLOCKING_GZIP_KB = 250
  *  name field and a button. Baseline: all four. */
 const MAX_BLOCKING_DEAD_LIBS = 0
 
-/** What a *seminar link* pulls: the blocking graph plus everything the inline
- *  head script modulepreloads on /s/:id (the editor and renderer chunks). A
- *  student never opens '/', so this — not the blocking number — is what the
- *  click on the link costs. Measured 328.2 KB gzip ≈ 1.7s on lecture-hall wifi;
- *  400 KB ≈ 2.1s is where "working a few seconds after the click" stops being
- *  true. This is the budget that goes red when codemirror or render grows. */
+/** What a *seminar link* pulls: the blocking graph, the form's code, and
+ *  everything the head warms on /s/:id in the room's language (the screen and
+ *  its imports, the editor, the renderer, the room dictionary). A student never
+ *  opens '/', so this — not the blocking number — is what the click on the link
+ *  costs. Measured 328.2 KB gzip ≈ 1.7s on lecture-hall wifi; 400 KB ≈ 2.1s is
+ *  where "working a few seconds after the click" stops being true. This is the
+ *  budget that goes red when codemirror or render grows. Checked once per
+ *  language, from the build's preload manifest: a room is opened in one
+ *  language, and the panel's or the reader's files are never fetched on it. */
 const MAX_SEMINAR_FIRST_FETCH_GZIP_KB = 400
 
 /** The biggest file the room downloads that no import edge leads to: the pdf.js
@@ -178,15 +187,54 @@ const ENTRY_ALLOWED_LIBS = new Set(['svelte', 'yjs'])
  *            chunk improves caching and parallelism, but the module graph still
  *            has to be downloaded and executed before the app boots, so it is
  *            counted here however many files it arrives in.
- * preload   — modulepreloaded but outside that static graph. On '/' that is a
- *             warming hint for a route nobody has reached yet; on /s/:id the
- *             inline script in <head> asks for these immediately, so on a
- *             seminar link they are part of the first fetch, not a saving.
+ * preload   — fetched at once on every route, outside that static graph: the
+ *             form's code (App), which main.ts imports the moment it runs, and
+ *             the stylesheets the head names.
+ * route     — fetched at once on some routes only: the room on /s/:id, the
+ *             panel on / and /admin, the reader on /c/ and /p/, each in the
+ *             page's language. `routes` says which, from the build's preload
+ *             manifest; on any other route these bytes do not move.
  * lazy      — reachable only through a dynamic import(): fetched on demand.
  */
-type Load = 'blocking' | 'preload' | 'lazy'
+type Load = 'blocking' | 'preload' | 'route' | 'lazy'
 
-interface Chunk { file: string; raw: number; gzip: number; load: Load; libs: string[] }
+interface Chunk {
+  file: string
+  raw: number
+  gzip: number
+  load: Load
+  /** For `route`: where, as "room", or "room ru" for one language's file. */
+  routes: string[]
+  libs: string[]
+}
+
+const LOCALES: readonly Locale[] = ['ru', 'en']
+const ROUTE_LABEL: Record<PreloadRoute, string> = {
+  room: '/s/:id',
+  admin: '/ and /admin',
+  reader: '/c/ and /p/',
+}
+const WARM_LABEL: Record<PreloadManifest['routes'][PreloadRoute]['warm'], string> = {
+  'at-once': 'on load',
+  'after-form-unless-known': 'cold: after the form paints · saved identity: on load',
+}
+
+/**
+ * One page opened in one language: the files it fetches at once and what
+ * they weigh. Costed per route because the head's preloads are per route, and
+ * per language because each screen's dictionary is: a sum over every route and
+ * both languages describes no page anybody opens.
+ */
+interface Scenario {
+  name: string
+  route: PreloadRoute | 'form'
+  locale: Locale | null
+  when: string
+  files: string[]
+  raw: number
+  gzip: number
+}
+
 interface BundleReport {
   dir: string
   chunks: Chunk[]
@@ -201,7 +249,12 @@ interface BundleReport {
   preloadGzip: number
   entryFiles: string[]
   blockingLibs: string[]
+  /** Libraries a seminar link fetches at once beyond the blocking graph. */
   preloadLibs: string[]
+  /** The join form and every route × language the manifest names. */
+  scenarios: Scenario[]
+  /** Why the routes could not be costed: no manifest beside the build. */
+  manifestProblem: string | null
   htmlBytes: number
   strays: string[]
   thirdParty: string[]
@@ -248,33 +301,25 @@ function htmlRefs(html: string): HtmlRefs {
     const media = attrOf(tag, 'media').toLowerCase()
     const deferred = media !== '' && media !== 'all' && media !== 'screen'
     /*
-     * The app stylesheet is the exception media="print" usually rules out:
-     * vite parks it off the critical path, but main.ts holds the loading slab
-     * up until that exact sheet has applied (it finds it by this attribute),
-     * so the join screen does not exist until it lands. Calling it a hint made
-     * the harness blind to the only file the first frame really waits on.
+     * The app stylesheet is the exception to "a preload is a hint": the build
+     * sends it as rel=preload so it travels at high priority, but main.ts holds
+     * the loading slab up until that exact sheet has applied (it finds it by
+     * this attribute), so the join screen does not exist until it lands. The
+     * check used to ask for rel=stylesheet as well, which the build stopped
+     * writing when the sheet moved off media="print", and the harness went
+     * blind again to the only file the first frame really waits on.
      */
     const heldForFirstPaint = /\bdata-colloq-css\b/i.test(tag)
-    if (rel.includes('stylesheet') && (!deferred || heldForFirstPaint)) refs.blockingSheets.push(url)
+    if (heldForFirstPaint || (rel.includes('stylesheet') && !deferred)) refs.blockingSheets.push(url)
     else refs.hints.push(url)
   }
   /*
-   * Preloads written by a script, not by a tag.
-   *
-   * The first-paint plugin can append inline modulepreloads. Read by tag alone those chunks
-   * looked lazy, and the harness printed "only on dynamic import()" about a
-   * quarter-megabyte that goes out on the wire at once. The literals are plain
-   * "/assets/*.js" strings in a JSON array, so lift them out of the script.
+   * Preloads written by a script, not by a tag, are not read here. The head
+   * scripts choose by route and language at run time, and lifting every
+   * literal out of them charged the panel and the reader, in both languages,
+   * to a seminar link. The build writes what each route fetches beside itself
+   * (web/scripts/preload-manifest.ts); `bundle` reads that instead.
    */
-  const inline = html.replace(/<noscript>[\s\S]*?<\/noscript>/gi, '')
-  for (const block of inline.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-    // This script is guarded by a saved room identity. It is not part of a
-    // student's cold visit; first-paint.test.mts exercises the emitted guard.
-    if (/\bdata-colloq-room-preload\b/.test(block[1])) continue
-    for (const ref of block[2].matchAll(/["'](\/assets\/[^"']+\.(?:js|mjs|css))["']/g)) {
-      refs.hints.push(ref[1])
-    }
-  }
   refs.hints = [...new Set(refs.hints)]
   return refs
 }
@@ -311,6 +356,27 @@ function thirdPartyBlocking(html: string): string[] {
   return [...new Set(hosts)]
 }
 
+/**
+ * The routes' lists as the build wrote them, or why there are none. A build
+ * from before the manifest, or one made by another config, gets a loud "rebuild"
+ * rather than a quiet fallback to guessing.
+ */
+function readManifest(): { manifest: PreloadManifest | null; problem: string | null } {
+  const file = join(DIST, PRELOAD_MANIFEST)
+  if (!existsSync(file)) {
+    return { manifest: null, problem: `no ${PRELOAD_MANIFEST} beside the build — rebuild with npm run build -w @colloq/web` }
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(file, 'utf8')) as PreloadManifest
+    if (manifest?.version !== 1 || !Array.isArray(manifest.entry) || !manifest.routes) {
+      return { manifest: null, problem: `${PRELOAD_MANIFEST} is not a version 1 preload manifest` }
+    }
+    return { manifest, problem: null }
+  } catch (err) {
+    return { manifest: null, problem: `${PRELOAD_MANIFEST} is unreadable: ${err instanceof Error ? err.message : err}` }
+  }
+}
+
 function bundle(): BundleReport | null {
   const indexPath = join(DIST, 'index.html')
   const assetsDir = join(DIST, 'assets')
@@ -318,6 +384,7 @@ function bundle(): BundleReport | null {
 
   const html = readFileSync(indexPath, 'utf8')
   const refs = htmlRefs(html)
+  const { manifest, problem } = readManifest()
 
   const code = new Map<string, string>()
   const chunks: Chunk[] = []
@@ -337,6 +404,7 @@ function bundle(): BundleReport | null {
       // precompressed assets would actually put on the wire.
       gzip: gzipSync(buf, { level: 9 }).length,
       load: 'lazy',
+      routes: [],
       libs: Object.entries(LIB_MARKERS).filter(([, m]) => text.includes(m)).map(([k]) => k),
     })
   }
@@ -353,19 +421,59 @@ function bundle(): BundleReport | null {
     queue.push(...staticImports(file, code.get(file) ?? ''))
   }
   for (const sheet of refs.blockingSheets) critical.add(sheet)
-  const hinted = new Set(refs.hints)
-  for (const c of chunks) c.load = critical.has(c.file) ? 'blocking' : hinted.has(c.file) ? 'preload' : 'lazy'
+
+  // Every route fetches the form; each route adds its own list, per language.
+  const everywhere = new Set([...refs.hints, ...(manifest?.entry ?? [])])
+  const routeNames = manifest ? (Object.keys(manifest.routes) as PreloadRoute[]) : []
+  const onRoute = new Map<string, string[]>()
+  for (const route of routeNames) {
+    const lists = manifest!.routes[route].fetch
+    const files = new Set(LOCALES.flatMap((locale) => lists[locale] ?? []))
+    for (const file of files) {
+      const only = LOCALES.filter((locale) => (lists[locale] ?? []).includes(file))
+      const label = only.length === LOCALES.length ? route : `${route} ${only.join('/')}`
+      onRoute.set(file, [...(onRoute.get(file) ?? []), label])
+    }
+  }
+  for (const c of chunks) {
+    c.load = critical.has(c.file) ? 'blocking' : everywhere.has(c.file) ? 'preload' : onRoute.has(c.file) ? 'route' : 'lazy'
+    if (c.load === 'route') c.routes = onRoute.get(c.file)!
+  }
   chunks.sort((a, b) => b.gzip - a.gzip)
+
+  const byFile = new Map(chunks.map((c) => [c.file, c]))
+  const cost = (
+    name: string, route: Scenario['route'], locale: Locale | null, when: string, lists: Iterable<string>[],
+  ): Scenario => {
+    const files = [...new Set(lists.flatMap((list) => [...list]))].sort()
+    const known = files.map((file) => byFile.get(file)).filter((c): c is Chunk => c !== undefined)
+    return {
+      name, route, locale, when, files,
+      raw: known.reduce((n, c) => n + c.raw, 0),
+      gzip: known.reduce((n, c) => n + c.gzip, 0),
+    }
+  }
+  const form = cost('the join form, any route', 'form', null, 'before the form', [critical, everywhere])
+  const scenarios = [form]
+  for (const route of routeNames) {
+    const { fetch, warm } = manifest!.routes[route]
+    for (const locale of LOCALES) {
+      scenarios.push(cost(`${ROUTE_LABEL[route] ?? route} ${locale}`, route, locale,
+        WARM_LABEL[warm] ?? warm, [form.files, fetch[locale] ?? []]))
+    }
+  }
 
   /*
    * Everything else in dist/: the pdf.js worker (bigger than any chunk above)
    * and the fonts. Counting only assets/ made "total on disk" understate the
    * build by 1.6x and left the largest single file the room downloads outside
    * every budget. Kept apart from `chunks` on purpose — these have no import
-   * edges, so blocking/preload/lazy would be three wrong answers.
+   * edges, so blocking/preload/lazy would be three wrong answers. The preload
+   * manifest is the build's notes about itself, not a file anybody fetches.
    */
   const extras = walk(DIST)
     .filter((full) => !full.startsWith(assetsDir + '/') && !/\.(?:html?|br|gz)$/i.test(full))
+    .filter((full) => full !== join(DIST, PRELOAD_MANIFEST))
     .map((full) => {
       const buf = readFileSync(full)
       return {
@@ -378,7 +486,16 @@ function bundle(): BundleReport | null {
 
   const blocking = chunks.filter((c) => c.load === 'blocking')
   const preload = chunks.filter((c) => c.load === 'preload')
+  const seminar = new Set(scenarios.filter((s) => s.route === 'room').flatMap((s) => s.files))
   const uniq = (cs: Chunk[]) => [...new Set(cs.flatMap((c) => c.libs))].sort()
+  const named = [
+    ...refs.scripts, ...refs.blockingSheets, ...refs.hints,
+    ...(manifest ? [...manifest.entry, ...routeNames.flatMap((route) =>
+      LOCALES.flatMap((locale) => [
+        ...(manifest.routes[route].preload[locale] ?? []),
+        ...(manifest.routes[route].fetch[locale] ?? []),
+      ]))] : []),
+  ]
   return {
     dir: DIST_LABEL,
     chunks,
@@ -390,15 +507,17 @@ function bundle(): BundleReport | null {
     preloadGzip: preload.reduce((n, c) => n + c.gzip, 0),
     entryFiles: [...blocking, ...preload].map((c) => c.file),
     blockingLibs: uniq(blocking),
-    preloadLibs: uniq(preload),
+    preloadLibs: uniq(chunks.filter((c) => c.load !== 'blocking' && seminar.has(c.file))),
+    scenarios,
+    manifestProblem: problem,
     htmlBytes: Buffer.byteLength(html),
     thirdParty: thirdPartyBlocking(html),
     // A modulepreload on something the entry statically imports is a waterfall
     // fix, not deferral: worth saying out loud so nobody reads it as a saving.
     preloadedCritical: refs.hints.filter((h) => critical.has(h)).length,
-    // Named by index.html but absent from disk: a broken build, worth shouting about.
-    strays: [...refs.scripts, ...refs.blockingSheets, ...refs.hints]
-      .filter((r) => !chunks.some((c) => c.file === r)),
+    // Named by index.html or the manifest but absent from disk: a broken
+    // build, worth shouting about.
+    strays: [...new Set(named)].filter((r) => !byFile.has(r)),
   }
 }
 
@@ -415,10 +534,11 @@ function printBundle(b: BundleReport | null): void {
   say(dim('   chunk'.padEnd(42) + 'raw'.padStart(9) + 'gzip'.padStart(9) + '  load'))
   for (const c of b.chunks) {
     const over = c.gzip > MAX_CHUNK_GZIP_KB * 1024
+    const load = c.load === 'route' ? c.routes.join(', ') : c.load
     const row =
       '   ' + c.file.replace('/assets/', '').padEnd(39) +
       kb(c.raw).padStart(9) + kb(c.gzip).padStart(9) +
-      '  ' + (c.load === 'blocking' ? c.load : dim(c.load))
+      '  ' + (c.load === 'blocking' ? load : dim(load))
     say(over ? red(row + `  ! over ${MAX_CHUNK_GZIP_KB}K gzip`) : row)
   }
   for (const e of b.extras) {
@@ -428,12 +548,9 @@ function printBundle(b: BundleReport | null): void {
   const lazyGzip = b.chunks.reduce((n, c) => (c.load === 'lazy' ? n + c.gzip : n), 0)
   const extrasGzip = b.extras.reduce((n, e) => n + e.gzip, 0)
   const blockingCount = b.chunks.filter((c) => c.load === 'blocking').length
-  const seminarGzip = b.blockingGzip + b.preloadGzip
   say('   ' + 'total on disk'.padEnd(39) + kb(b.totalRaw).padStart(9) + kb(b.totalGzip).padStart(9))
   say('   ' + bold('before the app can boot'.padEnd(39)) + kb(b.blockingRaw).padStart(9) + bold(kb(b.blockingGzip).padStart(9)) +
-      dim(`  ${blockingCount} file(s), entry + static imports`))
-  say('   ' + bold('a seminar link fetches at once'.padEnd(39)) + ''.padStart(9) + bold(kb(seminarGzip).padStart(9)) +
-      dim('  + what /s/:id modulepreloads: the address a student actually opens'))
+      dim(`  ${blockingCount} file(s), entry + static imports + the held stylesheet`))
   say(dim('   ' + '+ lazy, only on dynamic import()'.padEnd(39) + ''.padStart(9) + kb(lazyGzip).padStart(9) +
       (lazyGzip === 0 ? '  nothing is deferred' : '')))
   if (extrasGzip > 0) {
@@ -443,6 +560,19 @@ function printBundle(b: BundleReport | null): void {
     say(dim(`   ${b.preloadedCritical} modulepreload hint(s) point at chunks the entry statically imports:` +
         ' the fetches go out in parallel instead of in a waterfall, but none of those bytes are deferred'))
   }
+
+  /*
+   * What one page costs, opened in one language: the blocking graph, the form,
+   * and what the head (or importing the screen) fetches at once on that route.
+   * Each row is a page somebody opens; no row adds another route's files.
+   */
+  say()
+  say(dim('   page, in one language'.padEnd(42) + 'files'.padStart(9) + 'gzip'.padStart(9) + '  when'))
+  for (const s of b.scenarios) {
+    const row = '   ' + s.name.padEnd(39) + String(s.files.length).padStart(9)
+    say((s.route === 'room' ? bold : (x: string) => x)(row + kb(s.gzip).padStart(9)) + dim(`  ${s.when}`))
+  }
+  if (b.manifestProblem) say(red(`   routes not costed: ${b.manifestProblem}`))
 
   // The checkable version of "the join screen does not load CodeMirror".
   const verdict = Object.keys(LIB_MARKERS).map((lib) => {
@@ -460,17 +590,24 @@ function printBundle(b: BundleReport | null): void {
   if (b.thirdParty.length) {
     say(dim(`   blocking third-party: ${b.thirdParty.join(', ')} — a DNS lookup, a TLS handshake and a round trip to a host you do not control, before your own CSS applies`))
   }
-  if (b.strays.length) say(red(`   index.html references missing files: ${b.strays.join(', ')}`))
+  if (b.strays.length) say(red(`   index.html or the preload manifest references missing files: ${b.strays.join(', ')}`))
 
   const biggest = b.chunks[0]
   check('largest chunk gzip', biggest ? biggest.gzip / 1024 : 0, MAX_CHUNK_GZIP_KB, 'KB',
     'a ceiling on any one chunk, blocking or not: 1.3s of wifi whenever it is fetched, and one line re-fetches all of it')
   check('blocking payload gzip', b.blockingGzip / 1024, MAX_BLOCKING_GZIP_KB, 'KB',
     'fetched and parsed before the join screen can exist at all')
-  check('seminar link first fetch gzip', seminarGzip / 1024, MAX_SEMINAR_FIRST_FETCH_GZIP_KB, 'KB',
-    'blocking plus what /s/:id preloads: the bytes the student, not the teacher, waits for')
+  if (b.manifestProblem) {
+    check('preload manifest', 1, 0, '', `${b.manifestProblem}: without it no route can be costed`)
+  }
+  for (const s of b.scenarios.filter((x) => x.route === 'room')) {
+    check(`seminar link first fetch gzip (${s.locale})`, s.gzip / 1024, MAX_SEMINAR_FIRST_FETCH_GZIP_KB, 'KB',
+      'blocking, the form and what /s/:id warms in this language: the bytes the student, not the teacher, waits for')
+  }
   check('dead libs on join screen', dead.length, MAX_BLOCKING_DEAD_LIBS, '',
     'notebook-only code in the render-blocking graph: bytes the join screen cannot use')
+  check('files named but not built', b.strays.length, 0, '',
+    'a preload that 404s is a broken build, and a route costed without it is costed short')
   const biggestExtra = b.extras[0]
   if (biggestExtra) {
     check('largest file outside the graph', biggestExtra.gzip / 1024, MAX_ONDEMAND_ASSET_GZIP_KB, 'KB',
@@ -926,6 +1063,9 @@ if (JSON_MODE) {
       blockingRaw: b.blockingRaw, blockingGzip: b.blockingGzip, preloadGzip: b.preloadGzip,
       entryFiles: b.entryFiles,
       blockingLibs: b.blockingLibs, preloadLibs: b.preloadLibs,
+      scenarios: b.scenarios,
+      manifestProblem: b.manifestProblem,
+      strays: b.strays,
       htmlBytes: b.htmlBytes,
       thirdParty: b.thirdParty,
       preloadedCritical: b.preloadedCritical,
