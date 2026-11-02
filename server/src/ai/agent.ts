@@ -121,7 +121,9 @@ import {
 import { cancelRun, requestRun } from '../kernel/index.js'
 import { FilesStalled, filesSettled, slotFilesBarrier, slotOnMachine } from '../kernel/remote/files.js'
 import { getOracleSettings } from '../admin/settings.js'
+import { onStaffAuthorizationChanged } from '../admin/store.js'
 import { noteTokens } from '../admin/usage.js'
+import { grantedRole, type RoleGrant } from '../authorization.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
 import { cellsWord, describe as reason, effortNote, pad } from './text.js'
 import type { ReasoningEffort } from '@shared/admin'
@@ -803,7 +805,40 @@ export interface Hands {
    * oracle.
    */
   role: 'host' | 'participant'
+  /**
+   * Where `role` came from (authorization.ts · RoleGrant), asked again before
+   * every tool. A turn works for minutes after its request was answered, and
+   * a teacher deleted from the staff list, unseated from the room or whose
+   * link was rotated in that time must not go on editing the room as its
+   * teacher (see `stillHeld`).
+   *
+   * Absent for hands that are not a person's request — the tests' own —
+   * whose role is taken as given, the way `authorizeSocket` takes the role of
+   * a caller that brings no credentials.
+   */
+  grant?: RoleGrant
 }
+
+/**
+ * Whether the asker still holds the role the turn acts with.
+ *
+ * Only a host has something to lose here: a participant acts by the room's
+ * rules, which every tool re-reads anyway. And a participant who became a
+ * teacher meanwhile keeps the turn as they started it, never silently raised,
+ * the rule a socket keeps too (socket-authorization.ts).
+ */
+function stillHeld(asker: { role: Hands['role']; grant?: RoleGrant }): boolean {
+  return asker.role !== 'host' || !asker.grant || grantedRole(asker.grant) === 'host'
+}
+
+/** What a turn says, to the room and to the model, when its asker's rights went away under it. */
+const RIGHTS_WITHDRAWN = 'server.agent.rightsWithdrawn'
+
+/**
+ * The reason a turn is aborted with when its asker's rights are gone, so the
+ * end of the turn can say so instead of a plain "Stopped" nobody pressed.
+ */
+const WITHDRAWN = new Error('the asker no longer holds the role this turn acts with')
 
 /**
  * Run one tool — and check whether it rewrote a notebook past the room.
@@ -844,6 +879,15 @@ async function runTool(
   rawArgs: string,
   signal?: AbortSignal,
 ): Promise<Ran> {
+  /*
+   * The asker's rights before the room's rules: a teacher whose rights were
+   * withdrawn mid-turn is told that, not "only the teacher may" in a room
+   * they were teaching a minute ago.
+   */
+  if (!stillHeld(hands)) {
+    const said = tr(RIGHTS_WITHDRAWN)
+    return { step: note(said, name), failed: true, said }
+  }
   if (signal?.aborted || !allowsAgent(getRules(hands.sessionId).agent, hands.role)) {
     const said = !actsAfterClass(isFinished(hands.sessionId), hands.role)
       ? tr(CLASS_IS_OVER)
@@ -2641,9 +2685,10 @@ const INTERRUPT_GRACE_MS = 5_000
  */
 async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): Promise<RunResult> {
   await openTerminal(hands.sessionId)
-  // Opening a runtime can outlast a rule change. Do not enqueue even one
-  // command after cancellation; interrupting it afterwards is already too late.
-  if (signal?.aborted || !allowsAgent(getRules(hands.sessionId).agent, hands.role)) {
+  // Opening a runtime can outlast a rule change, or the asker's rights. Do not
+  // enqueue even one command after cancellation; interrupting it afterwards is
+  // already too late.
+  if (signal?.aborted || !stillHeld(hands) || !allowsAgent(getRules(hands.sessionId).agent, hands.role)) {
     return { output: '', exit: null, finished: false, cut: 'stop' }
   }
   const result = await new Promise<{ output: string; finished: boolean; cut: RunResult['cut'] }>(
@@ -2794,6 +2839,8 @@ export interface WorkOptions {
   participantColor: string
   /** The asker's role — the turn works with the notebook under it. See `Hands.role`. */
   role: 'host' | 'participant'
+  /** Where that role came from, asked again before every tool. See `Hands.grant`. */
+  grant?: RoleGrant
   message: string
   usageId?: number
   /** The reasoning level — the same as for a question: the mode differs by its tools. */
@@ -2845,9 +2892,29 @@ async function loop(
   const unsubscribe = onRulesChanged((sessionId, rules) => {
     if (sessionId === options.sessionId && !allowsAgent(rules.agent, options.role)) controller.abort()
   })
+  /*
+   * And to the asker's rights, the same way. A deleted teacher, a rotated
+   * link or a lost seat in the room's course is heard the moment the panel
+   * makes it, and cuts the turn where it stands: the model's request in
+   * flight, a run it waits for. Any staff change re-reads this one grant:
+   * such changes are rare, and the answer is a few indexed lookups.
+   *
+   * A read that throws stops the turn rather than the caller: listeners are
+   * called in a row (admin/store.ts · authorizationChanged), and a throw here
+   * would leave the sockets after this one open on the rights just taken.
+   */
+  const unheld = onStaffAuthorizationChanged(() => {
+    let held = false
+    try {
+      held = stillHeld(options)
+    } catch {
+      /* rights that cannot be confirmed are not acted on */
+    }
+    if (!held) controller.abort(WITHDRAWN)
+  })
   let outcome: ActivityOutcome = 'error'
   try {
-    await steps(options, entryId, history, controller.signal, names)
+    await steps(options, entryId, history, controller, names)
     outcome = controller.signal.aborted ? 'cancelled' : 'completed'
   } finally {
     if (controller.signal.aborted) outcome = 'cancelled'
@@ -2855,6 +2922,7 @@ async function loop(
       entryId, action: 'work', outcome, source: 'oracle', durationMs: Date.now() - activityBeganAt,
     }, options.role)
     unsubscribe()
+    unheld()
     running.delete(key)
   }
 }
@@ -2927,9 +2995,10 @@ async function steps(
   options: WorkOptions,
   entryId: string,
   history: ChatTurn[],
-  signal: AbortSignal,
+  controller: AbortController,
   names: ModelNames,
 ): Promise<void> {
+  const signal = controller.signal
   const hands: Hands = {
     sessionId: options.sessionId,
     entryId,
@@ -2939,6 +3008,17 @@ async function steps(
       participantId: options.participantId,
     },
     role: options.role,
+    grant: options.grant,
+  }
+  /*
+   * Whether the turn may take its next step: not stopped, the room still lets
+   * this role act, and the asker still holds it. A change of rights made by
+   * another process sends no event (see loop), so it is found here, and
+   * stops the turn the way the event would: cancelled, and saying why.
+   */
+  const mayGoOn = (): boolean => {
+    if (!signal.aborted && !stillHeld(hands)) controller.abort(WITHDRAWN)
+    return !signal.aborted && allowsAgent(getRules(options.sessionId).agent, options.role)
   }
   const tools = toolsFor(hands)
   const stepLimit = agentStepsIn(getRules(options.sessionId).agentSteps, getOracleSettings().agentSteps)
@@ -2973,7 +3053,7 @@ async function steps(
   const outOfTime = () => Date.now() - began >= TURN_BUDGET_MS
 
   while (stepLimit === 0 || taken < stepLimit) {
-    if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
+    if (!mayGoOn()) {
       stopped = true
       break
     }
@@ -3007,7 +3087,7 @@ async function steps(
     const answer = await completeWithTools(messages, tools, signal, bill, options.effort)
     // An aborted request comes back as an empty answer without calls, and
     // without this check the turn would end in emptiness: no text, no "Stopped".
-    if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
+    if (!mayGoOn()) {
       stopped = true
       break
     }
@@ -3053,7 +3133,7 @@ async function steps(
     for (const call of answer.calls) {
       // Between steps, not inside them: an edit abandoned in the middle is half
       // a file, and no undo expects that.
-      if (signal.aborted || !allowsAgent(getRules(options.sessionId).agent, options.role)) {
+      if (!mayGoOn()) {
         stopped = true
         break
       }
@@ -3136,7 +3216,12 @@ async function steps(
   }
 
   if (stopped) {
-    spoke = spoke || tr("server.stoppedCompletedActionsAreListedAboveStopping.2f9e57")
+    // Nobody pressed "Stop" when the asker's rights went away: the room is told what did happen.
+    spoke =
+      spoke ||
+      (signal.reason === WITHDRAWN
+        ? tr(RIGHTS_WITHDRAWN)
+        : tr("server.stoppedCompletedActionsAreListedAboveStopping.2f9e57"))
   } else if (looped) {
     spoke = spoke || tr('server.agent.loopStop')
   } else if (ranOut) {

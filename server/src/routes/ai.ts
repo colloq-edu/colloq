@@ -14,7 +14,9 @@ import { appendActivity } from '../activity.js'
  * whole room watches the model appear to produce.
  */
 import { Router } from 'express'
+import { currentStaff } from '../admin/auth.js'
 import { getOracleSettings } from '../admin/settings.js'
+import { grantOf } from '../authorization.js'
 import {
   countRecentQuestions,
   countRoomQuestions,
@@ -803,6 +805,10 @@ export function aiRoutes(): Router {
           // they joined with: the turn edits the notebook with their hands and
           // by their rights.
           role: auth.role,
+          // And what gave it, the very staff account `sessionAuth` asked: the
+          // turn outlives this request, and asks again before every tool
+          // whether the person still has the role (ai/agent.ts · Hands.grant).
+          grant: grantOf(currentStaff(req), auth),
           message,
           usageId,
           effort,

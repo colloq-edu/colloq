@@ -41,6 +41,53 @@ export function roleFor(
 }
 
 /**
+ * Where a request's role came from, kept by work that outlives the request:
+ * an Oracle turn (ai/agent.ts) writes files and runs code for minutes after
+ * the request that started it was answered.
+ *
+ * Not the role but the question that gave it, to be asked again: the staff
+ * account the request spoke for, with its authorization version at the time,
+ * and the room token it carried, whose handoff grant and host-token branch
+ * `roleFor` reads exactly as on any request.
+ */
+export interface RoleGrant {
+  staff: { id: string; version: number | null } | null
+  token: Pick<TokenPayload, 'sessionId' | 'participantId' | 'staff' | 'staffVersion'>
+}
+
+/** The grant behind the role `roleFor(staff, payload)` gives a request now. */
+export function grantOf(
+  staff: StaffLike | null | undefined,
+  payload: Pick<TokenPayload, 'sessionId' | 'participantId' | 'staff' | 'staffVersion'>,
+): RoleGrant {
+  return {
+    staff: staff ? { id: staff.id, version: staffAuthorizationVersion(staff.id) } : null,
+    token: {
+      sessionId: payload.sessionId,
+      participantId: payload.participantId,
+      staff: payload.staff,
+      staffVersion: payload.staffVersion,
+    },
+  }
+}
+
+/**
+ * The role a grant gives right now.
+ *
+ * The staff account still counts only at the authorization version the
+ * request saw: rotating the link moves it (and breaks the cookie that spoke
+ * for the account), deleting the row takes it away. A changed role or a lost
+ * seat needs no version: `roleFor` asks canSeeRoom of the row as it is now.
+ * These are the questions a socket asks on every frame
+ * (socket-authorization.ts), for work that has no frames to ask them on.
+ */
+export function grantedRole(grant: RoleGrant): TokenPayload['role'] {
+  const { staff } = grant
+  const held = staff && staffAuthorizationVersion(staff.id) === staff.version ? staffById(staff.id) : null
+  return roleFor(held, grant.token)
+}
+
+/**
  * The staff account a token speaks for, while that grant still stands.
  *
  * A handoff key puts the teacher's id and their authorization version into
