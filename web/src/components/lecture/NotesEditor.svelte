@@ -179,8 +179,15 @@
     overPages = [...unsaved.keys()].sort((a, b) => a - b)
   }
 
-  /** The last edit sent, until its echo comes back from the server. */
-  let awaiting = $state<{ page: number; text: string } | null>(null)
+  /*
+   * Slides of this document with an edit the server has not confirmed yet.
+   * The session keeps them (session.svelte.ts · #unsent) and lays them over
+   * the server's map, so `notes` already shows them: a slide turned away from
+   * and back to opens on what was typed there, not on the server's older text.
+   */
+  const unsent = $derived(session.notesUnsent[file] ?? [])
+  /** Something was sent from here since the last "Saved". */
+  let sent = $state(false)
   /*
    * Typed and not sent yet (the 400 ms pause): the reactive twin of
    * `pending`, for the status line, which must not keep saying "Saved"
@@ -200,30 +207,26 @@
     })
   })
 
-  /* The edit is saved when the server's echo says the same text. */
+  /* Saved once the server has confirmed every edit of this document. */
   $effect(() => {
-    const wait = awaiting
-    if (!wait) return
-    if ((notes[wait.page] ?? '') === wait.text) {
-      savedAt = Date.now()
-      awaiting = null
-    }
+    if (!sent || unsent.length > 0) return
+    savedAt = Date.now()
+    sent = false
   })
 
   /*
    * Another device edited the open slide: taken only while nobody types
    * here, nothing is waiting to go out and our own echo window is over.
    *
-   * Nor while this slide's own edit is still unanswered. Offline, the edit
-   * sits in the outbox with no echo coming; the blur that follows re-ran
-   * this and put the server's OLD text back into the field, and the next
-   * keystroke on that old text replaced the queued edit (the outbox keeps
-   * one save per slide), so what was typed offline was gone for good.
+   * Nor while this slide's own edit is still unconfirmed. Offline, the edit
+   * sits in the outbox with no echo coming, and an echo of an older text of
+   * ours can arrive after a newer one was typed; either put a text into the
+   * field that the next keystroke would then have saved over the newest one.
    */
   $effect(() => {
     const fresh = stored
     if (!ready || pending || (typing && touched)) return
-    if (awaiting && awaiting.page === page) return
+    if (unsent.includes(page)) return
     if (performance.now() - sentAt < ECHO_MS) return
     untrack(() => {
       if (unsaved.has(page)) return
@@ -251,7 +254,7 @@
     }
     if (unsaved.delete(heldPage)) syncOver()
     sentAt = performance.now()
-    awaiting = { page: heldPage, text }
+    sent = true
     session.send({ t: 'notes:set', file, page: heldPage, text })
   }
 
@@ -550,8 +553,9 @@
   const over = $derived(length > MAX)
   const status = $derived.by(() => {
     if (over) return 'over'
-    if ((awaiting || dirty) && !session.controlConnected) return 'offline'
-    if (awaiting || dirty) return 'saving'
+    const waiting = unsent.length > 0 || dirty
+    if (waiting && !session.controlConnected) return 'offline'
+    if (waiting) return 'saving'
     if (savedAt !== null) return 'saved'
     return 'idle'
   })
@@ -617,15 +621,16 @@
    * was written rather than from the socket's echo: the echo may still be on
    * its way, and the field would otherwise go on showing the old note, ready
    * to be typed over and sent back on top of the import. Drafts the import
-   * replaced are dropped with it.
+   * replaced are dropped with it, and so are edits of those slides still
+   * waiting for the server, which a reconnect would send over the import.
    */
   function imported(written: Record<number, string>): void {
     importOpen = false
+    const pages = Object.keys(written).map(Number)
     let dropped = false
-    for (const key of Object.keys(written)) dropped = unsaved.delete(Number(key)) || dropped
+    for (const at of pages) dropped = unsaved.delete(at) || dropped
     if (dropped) syncOver()
-    // The import wrote over that slide: an older edit's echo will never match it now.
-    if (awaiting && written[awaiting.page] !== undefined) awaiting = null
+    session.dropNoteEdits(file, pages)
     const text = written[page]
     if (text !== undefined) {
       if (timer !== undefined) window.clearTimeout(timer)

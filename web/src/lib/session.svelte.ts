@@ -26,6 +26,7 @@ import type {
   TerminalStatus,
 } from '@shared/protocol'
 import {
+  MAX_NOTE_CHARS,
   readZoom,
   sameZoom,
   type InkStroke,
@@ -53,6 +54,7 @@ import { withQueuePosition } from './council-queue'
 import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
+import { NotesOutbox } from './notes-outbox'
 import type { PageNews } from './class-end'
 import { forgetHelp } from './signature-help'
 import { noteKernelMachine, type KernelMachines } from './kernel-machines'
@@ -584,7 +586,12 @@ export class SessionState {
   zoomNow = $state.raw<{ page: number; zoom: LectureZoom | null } | null>(null)
 
   /**
-   * Speaker notes for `notesFile`: page number → text.
+   * Speaker notes for `notesFile`: page number → text, as this device last
+   * wrote them. The server's map with this device's own edits laid over it
+   * until the server has confirmed each one (lib/notes-outbox.ts): a slide
+   * turned away from and back to, offline or with the echo still on its way,
+   * shows what was typed on it rather than the server's older text, which the
+   * next keystroke would then have saved over the edit.
    *
    * `$state.raw` and only whole assignment, as with ink and for the same
    * reason: the notes feed reads the map, not markup by key, and a deep proxy
@@ -592,6 +599,16 @@ export class SessionState {
    * hosts receive it; in the hall this map is always empty.
    */
   notes = $state.raw<Record<number, string>>({})
+  /** The server's own map for `notesFile`, as its last frames said it. */
+  #notesHeard: Record<number, string> = {}
+  /** This device's note edits the server has not confirmed: their outbox, resent on reconnect. */
+  #unsent = new NotesOutbox()
+  /**
+   * Pages per document with an edit the server has not confirmed: the
+   * editors' "saving", which must not say "saved" about a text still in the
+   * outbox.
+   */
+  notesUnsent = $state.raw<Record<string, number[]>>({})
   /**
    * Whose notes lie in `notes`. `null` — they have not arrived yet.
    *
@@ -902,6 +919,11 @@ export class SessionState {
       // And what staff heard of the class's machines is said again by this connection's welcome.
       this.kernelMachines = {}
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
+      // Every note edit not yet confirmed goes again, whatever became of the
+      // copy written into the previous socket.
+      for (const note of this.#unsent.resend()) {
+        socket.send(JSON.stringify({ t: 'notes:set', ...note }))
+      }
       /*
        * And re-ask for the notes — here, next to draining the queue.
        *
@@ -1257,8 +1279,9 @@ export class SessionState {
          * an old one arriving would silently overwrite the new one.
          */
         if (message.file === this.#notesWanted) {
-          this.notes = message.notes
+          this.#notesHeard = message.notes
           this.notesFile = message.file
+          this.#showNotes()
         }
       } else if (message.t === 'notes:one') {
         /*
@@ -1269,16 +1292,19 @@ export class SessionState {
          *
          * The echo is not applied before the map: without it, it is unclear
          * what to attribute the page to, and the map will arrive next with this
-         * edit already inside.
+         * edit already inside. It still settles this device's own edit, of
+         * whatever document: the server echoes one to its sender either way.
          */
+        this.#unsent.settle(message.file, message.page, message.text)
         if (message.file === this.notesFile) {
-          const next = { ...this.notes }
+          const next = { ...this.#notesHeard }
           // An empty note is its absence, just as in the database: a string of
           // spaces left in the map draws the feed as non-empty.
           if (message.text) next[message.page] = message.text
           else delete next[message.page]
-          this.notes = next
+          this.#notesHeard = next
         }
+        this.#showNotes()
       } else if (message.t === 'ink') {
         /*
          * A FULL replacement — however many pages ride in the frame.
@@ -1626,6 +1652,10 @@ export class SessionState {
      * mode.
      */
     if (message.t === 'run' || message.t === 'restart' || message.t === 'council:run') forgetHelp()
+    if (message.t === 'notes:set' && this.#keepsNote(message)) {
+      this.#writeNote(message)
+      return
+    }
     if (this.#control?.readyState === WebSocket.OPEN) {
       this.#control.send(JSON.stringify(message))
     } else if (!DISCARDED_OFFLINE.has(message.t)) {
@@ -1638,6 +1668,53 @@ export class SessionState {
       // sentence the buttons carry instead of silence.
       if (!this.connected) this.lastError = OFFLINE_REASON
     }
+  }
+
+  /* ---------------------------------------------- speaker notes' outbox */
+
+  /**
+   * A note the server would refuse is not kept: refused out loud once, it
+   * must not be sent again on every reconnect. The editors never send one
+   * (they hold a text over the ceiling on screen), so this is a guard.
+   */
+  #keepsNote(message: Extract<ControlClientMessage, { t: 'notes:set' }>): boolean {
+    const { page, text } = message
+    return Number.isFinite(page) && page >= 1 && text.length <= MAX_NOTE_CHARS
+  }
+
+  /**
+   * An edit of a speaker note: into the outbox, and onto the wire when there
+   * is one. Offline it waits in the outbox rather than in the control queue,
+   * and goes with the reconnect.
+   */
+  #writeNote(message: Extract<ControlClientMessage, { t: 'notes:set' }>): void {
+    const socket = this.#control
+    const live = socket?.readyState === WebSocket.OPEN
+    if (live) {
+      socket.send(JSON.stringify(message))
+    } else if (!this.connected) {
+      // The same sentence as any other press that cannot go now: the lecture
+      // column has no line of its own to say it.
+      this.lastError = OFFLINE_REASON
+    }
+    this.#unsent.write(message.file, message.page, message.text, live)
+    this.#showNotes()
+  }
+
+  /** The map the surfaces read, and the pages still waiting for the server. */
+  #showNotes(): void {
+    this.notes = this.#unsent.over(this.notesFile, this.#notesHeard)
+    this.notesUnsent = this.#unsent.pending()
+  }
+
+  /**
+   * Forget this device's unconfirmed edits of these pages. An import has just
+   * written them whole, and an edit still in the outbox would go out over the
+   * import with the next reconnect.
+   */
+  dropNoteEdits(file: string, pages: Iterable<number>): void {
+    this.#unsent.drop(file, pages)
+    this.#showNotes()
   }
 
   /*
@@ -1919,8 +1996,9 @@ export class SessionState {
      * under someone else's pages is worse than none, and `notesFile = null` is
      * exactly the "not arrived yet" by which the feed shows the wait.
      */
-    this.notes = {}
+    this.#notesHeard = {}
     this.notesFile = null
+    this.#showNotes()
     this.#askNotes()
   }
 

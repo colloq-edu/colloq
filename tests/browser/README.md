@@ -26,6 +26,14 @@ recovers by itself from a ticket request the network lost and from a file that
 was uploaded after the note was written — the retry is driven by the note's own
 effect, which only the built app runs.
 
+`notes-offline.spec.ts` signs in as the fixture's owner (the setup token in
+`fixture.ts`, written into the temporary data directory before the server
+reads it) and drives the speaker-notes editor and the lecture column: offline
+edits across slide turns, the server's echoes held back for seconds, and a
+save swallowed by a connection that then drops. Delays keep each frame in
+order; the texts compared at the end are read back from the server by a fresh
+browser.
+
 Playwright's [web server lifecycle](https://playwright.dev/docs/test-webserver)
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute)
 provide the isolated server and controlled connection loss. CI retains traces

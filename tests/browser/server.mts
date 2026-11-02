@@ -1,5 +1,7 @@
 import '../_env.mts'
+import fs from 'node:fs'
 import path from 'node:path'
+import {NOTES_FILE,NOTES_ROOM,SERVER_NOTES,SETUP_TOKEN,slides} from './fixture.ts'
 // _env initializes and owns an isolated temporary state directory before any
 // server module import. This process never opens the ordinary data/ directory.
 process.env.PORT='4317'
@@ -8,9 +10,15 @@ process.env.PUBLIC_URL='http://127.0.0.1:4317'
 process.env.STATIC_DIR=path.resolve('web/dist')
 process.env.UI_LANGUAGE='en'
 process.env.COMPETITION_BACKEND='test'
-const {createSession}=await import('../../server/src/db.js')
+// The owner's way back in, known to the specs that need a teacher: the server
+// keeps a setup token it finds on disk, so this one is in place before it reads.
+fs.mkdirSync(process.env.DATA_DIR!,{recursive:true})
+fs.writeFileSync(path.join(process.env.DATA_DIR!,'setup-token'),SETUP_TOKEN+'\n',{mode:0o600})
+const {createSession,setNote}=await import('../../server/src/db.js')
 const {getSessionDoc}=await import('../../server/src/collab/index.js')
 const {createCell,writeOutput}=await import('../../shared/notebook.js')
+const {createTeacher}=await import('../../server/src/admin/store.js')
+const {makeFile}=await import('../../server/src/workspace.js')
 for(const [roomId,council] of [['browser-shared',false],['browser-council',true]] as const){
  createSession(roomId,'Browser reconnect fixture',null)
  const doc=getSessionDoc(roomId).doc
@@ -79,4 +87,10 @@ for(const [roomId,name,seeded] of [['browser-note-image','fig.png',true],['brows
  })
  if(seeded)writeFileSync(path.join(sessionDir(roomId),name),PNG)
 }
+// A claimed instance, as a claim leaves it, but with the setup token kept: the
+// owner it signs in as is staff of every room, so the room makes them its host.
+createTeacher({email:'owner@test.local',name:'Browser owner',role:'owner'})
+createSession(NOTES_ROOM,'Browser notes fixture',null)
+makeFile(NOTES_ROOM,NOTES_FILE,slides(SERVER_NOTES.length))
+SERVER_NOTES.forEach((text,index)=>setNote(NOTES_ROOM,NOTES_FILE,index+1,text))
 await import('../../server/src/index.js')

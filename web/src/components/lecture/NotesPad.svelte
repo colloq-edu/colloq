@@ -390,10 +390,12 @@
     overDrafts.delete(draftKey(heldFile, heldPage))
     sentAt = performance.now()
     /*
-     * We send the WHOLE text, not a diff. On a dropped connection the client
-     * queue holds sixteen messages and throws out the old ones: with the full
-     * text the one surviving message is the right one, with a diff what
-     * survived would be a meaningless tail.
+     * We send the WHOLE text, not a diff. On a dropped connection the edit
+     * waits in the session's outbox, which keeps one text per page and sends
+     * it again on reconnect (lib/notes-outbox.ts): with the full text the one
+     * kept is the right one, with a diff what was kept would be a meaningless
+     * tail. Until the server confirms it, `session.notes` shows it too, so the
+     * reload below cannot put the server's older text back into the field.
      */
     session.send({ t: 'notes:set', file: heldFile, page: heldPage, text: held })
   }
