@@ -1759,10 +1759,19 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
      * ("STARTING") are equally untrue here — the first promises a live
      * Python, the second promises that it is about to be. The old key gets
      * the compatible word (see `legacyKernelStatus`).
+     *
+     * Only when the word is not already there. A Y.Map `set` of the same
+     * value is still a write: a new item with fresh clocks. This runs before
+     * the history starts (collab/index.ts · getEntry), so those clocks reach
+     * the snapshot and never the history — and on the next open the history
+     * repair found the notebook ahead of its history and wrote a whole
+     * keyframe, on every open of every room (seen on a live install: sixteen
+     * 200 KB keyframes in a day and a half for a room students only read).
      */
     const status = meta.get('kernelStatus')
-    if (status !== undefined && status !== 'dead')
-      meta.set('kernelStatus', legacyKernelStatus('off'))
+    const rest = legacyKernelStatus('off')
+    if (status !== undefined && status !== 'dead' && status !== rest)
+      meta.set('kernelStatus', rest)
 
     /*
      * And the same per notebook.
@@ -1781,7 +1790,7 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
         if (waiting instanceof Y.Array && waiting.length > 0) waiting.delete(0, waiting.length)
         if (entry.get(KERNEL_RUNNING_FIELD) != null) entry.set(KERNEL_RUNNING_FIELD, null)
         const state = entry.get(KERNEL_STATUS_FIELD)
-        if (state !== undefined && state !== 'dead')
+        if (state !== undefined && state !== 'dead' && state !== 'off')
           entry.set(KERNEL_STATUS_FIELD, 'off' as KernelStatus)
         /*
          * A machine's link as the process that wrote it last saw it. "No
