@@ -14,7 +14,8 @@ Only connection availability is controlled; server responses are not fabricated.
 Code assertions exclude the remote-cursor name widgets from rendered code lines.
 
 `markdown.spec.ts` covers what other people's notes may do to the page they
-are drawn into: the app's own classes, popovers, ids and `data-*` names. It needs
+are drawn into: the app's own classes, popovers, ids and `data-*` names, and a
+`data-math` that imitates the renderer's formula placeholders. It needs
 the production build because the overlay it guards against is made of the app's
 real utility classes, and only the built stylesheet says what they do. Its rooms
 are seeded in `server.mts` with fixed cell ids. `outputs.spec.ts` does the same

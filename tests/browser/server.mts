@@ -35,6 +35,12 @@ const markup:Record<string,Fixture[]>={
   {type:'markdown',source:'<map name="m"><area shape="rect" coords="0,0,20,20" href="https://example.com/area"></map><img usemap="#m" alt="mapped" width="20" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">\n\n<svg width="200" height="40"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect width="100" height="20" fill="url(#g)"/><a xlink:href="https://example.com/svg"><text x="110" y="15">svg link</text></a></svg>'},
   {type:'code',source:'print("after")'},
  ],
+ 'browser-note-math':[
+  {type:'markdown',source:'before <span data-math="%">broken</span> <span data-math="%ZZ">zz</span> <span data-math="%E0%A4%A">utf</span> <span data-math="%5Cfrac%7B1%7D%7B2%7D">fraction</span> after\n\n<div data-math="x" data-display="">display</div>'},
+  {type:'markdown',source:'Inline $x^2$ and an unparsable $\\frac{1}{$ one\n\n$$\\frac{a}{b}$$'},
+  {type:'markdown',source:'**bold** text'},
+  {type:'code',source:'print("after")'},
+ ],
  'browser-output-host':[
   {type:'code',source:'display(HTML(host))',outputs:[{'text/html':`<b>owned</b><style>:host{${HOST_TAKEOVER}}</style>`}]},
   {type:'code',source:'display(SVG(context))',outputs:[{'image/svg+xml':`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="20"><style>:host-context(body){${HOST_TAKEOVER}}</style><rect width="80" height="20"/></svg>`}]},

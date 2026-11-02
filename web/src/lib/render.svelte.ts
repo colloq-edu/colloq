@@ -66,22 +66,69 @@ export interface MarkdownOptions {
  * Two marked extensions of our own instead of the ready-made
  * marked-katex-extension: that one has to draw the formula at once, while here
  * it must survive the sanitizer (see `markdown` below). The markup gets an
- * empty node with the TeX in an attribute — encoded, so that neither a quote
- * nor a `<` from the formula becomes markup.
+ * empty node that only NAMES the formula; the TeX waits outside the markup,
+ * in the render's own list, so neither a quote nor a `<` from it can become
+ * markup.
+ *
+ * Names, and not the TeX itself, because the placeholder is an attribute,
+ * and raw HTML in a note brings attributes of its own. The TeX used to travel
+ * in `data-math`, URI-encoded, and every `[data-math]` that came out of the
+ * sanitizer was taken for ours: `<span data-math="%">` reached
+ * decodeURIComponent, whose URIError went out of markdown() and out of
+ * Svelte's update with it — on the production build NO note on the page was
+ * formatted any more, for anyone, on every load. So a placeholder carries the
+ * render's token and a number, the token is drawn afresh for every render,
+ * and a `[data-math]` without it is somebody's markup: the attribute goes,
+ * the words stay.
  *
  * `$5 and $10` is not a formula: there is never a space right after the
  * opening dollar or right before the closing one, and never a digit right
  * after the closing one. This is Pandoc's rule, and it also saves prices in a
  * task's text.
  */
-const mathSlot = (tex: string, display: boolean): string =>
-  `<${display ? 'div' : 'span'} data-math="${encodeURIComponent(tex)}"${display ? ' data-display=""' : ''}></${display ? 'div' : 'span'}>`
+export interface Formula {
+  tex: string
+  display: boolean
+}
+
+/** The render in progress — marked calls the extensions synchronously, from inside markdown(). */
+let rendering: { token: string; formulas: Formula[] } | null = null
+
+function mathSlot(tex: string, display: boolean): string {
+  const tag = display ? 'div' : 'span'
+  if (!rendering) {
+    // A parse outside markdown() has no list to wait in: the formula stays the text it was.
+    const text = display ? `$$${tex}$$` : `$${tex}$`
+    return `<${tag}>${text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`)}</${tag}>`
+  }
+  rendering.formulas.push({ tex, display })
+  return `<${tag} data-math="${rendering.token}-${rendering.formulas.length - 1}"></${tag}>`
+}
 
 /**
- * The placeholder's attributes: the only `data-*` a note keeps, because the
- * renderer writes them itself (lib/sanitize.ts · names).
+ * A token no note can know in advance: drawn per render, never stored.
+ *
+ * `getRandomValues`, not `randomUUID`: the latter exists only in a secure
+ * context, and an instance on a department's plain http is a real one.
  */
-const MATH_SLOT_ATTRS = ['data-math', 'data-display']
+function renderToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint32Array(2)), (word) => word.toString(36)).join('')
+}
+
+/**
+ * The formula a placeholder names — `undefined` for any `data-math` this
+ * render did not write. Exported for tests/markdown-math.test.mts.
+ */
+export function formulaAt(value: string | null, token: string, formulas: readonly Formula[]): Formula | undefined {
+  const number = value?.startsWith(`${token}-`) ? value.slice(token.length + 1) : ''
+  return /^\d+$/.test(number) ? formulas[Number(number)] : undefined
+}
+
+/**
+ * The placeholder's attribute: the only `data-*` a note keeps, because the
+ * renderer writes it itself (lib/sanitize.ts · names).
+ */
+const MATH_SLOT_ATTRS = ['data-math']
 
 const blockMath = {
   name: 'blockMath',
@@ -164,7 +211,15 @@ async function importRenderers(): Promise<Renderers> {
 
   return {
     markdown(source, options = {}) {
-      const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
+      const token = renderToken()
+      const formulas: Formula[] = []
+      rendering = { token, formulas }
+      let raw: string
+      try {
+        raw = marked.parse(source, { async: false, gfm: true, breaks: true })
+      } finally {
+        rendering = null
+      }
       const holder = document.createElement('div')
       holder.appendChild(
         DOMPurify.sanitize(raw, {
@@ -236,19 +291,27 @@ async function importRenderers(): Promise<Renderers> {
        * above, and only then does KaTeX build its tree from the TeX, behind
        * their backs. And neither a style nor a tag can be smuggled in through
        * TeX: `trust` is off, and a parse error is output as text.
+       *
+       * Only the placeholders this render wrote (`formulaAt`, see mathSlot),
+       * and each on its own: whatever goes wrong inside KaTeX stays one
+       * formula shown as its source, never an exception out of markdown()
+       * that takes every note on the page down with it.
        */
       for (const slot of holder.querySelectorAll('[data-math]')) {
-        const tex = decodeURIComponent(slot.getAttribute('data-math') ?? '')
+        const formula = formulaAt(slot.getAttribute('data-math'), token, formulas)
         slot.removeAttribute('data-math')
-        const display = slot.hasAttribute('data-display')
-        slot.removeAttribute('data-display')
-        slot.innerHTML = katex.renderToString(tex, {
-          throwOnError: false,
-          displayMode: display,
-          output: 'htmlAndMathml',
-          trust: false,
-          strict: 'ignore',
-        })
+        if (!formula) continue
+        try {
+          slot.innerHTML = katex.renderToString(formula.tex, {
+            throwOnError: false,
+            displayMode: formula.display,
+            output: 'htmlAndMathml',
+            trust: false,
+            strict: 'ignore',
+          })
+        } catch {
+          slot.textContent = formula.display ? `$$${formula.tex}$$` : `$${formula.tex}$`
+        }
       }
       /*
        * A wide table scrolls inside its own wrapper instead of stretching the

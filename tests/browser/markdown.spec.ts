@@ -95,3 +95,22 @@ test('ordinary note markup renders as before',async({page})=>{
  })
  expect(gradient).toEqual({fill:'url(#user-content-g)',defined:'linearGradient'})
 })
+
+test('a data-math of a note\'s own is its text, and no formula takes the other notes down',async({page})=>{
+ // `%` used to reach decodeURIComponent as if it were the renderer's own
+ // placeholder; the URIError left every note on the page unformatted.
+ const errors:string[]=[]
+ page.on('pageerror',error=>errors.push(error.message))
+ await enter(page,'browser-note-math')
+ const forged=page.locator('.prose-note',{hasText:'broken'})
+ await expect(forged).toContainText('before broken zz utf fraction after')
+ await expect(forged).toContainText('display')
+ await expect(forged.locator('.katex, [data-math], [data-display]')).toHaveCount(0)
+ const real=page.locator('.prose-note',{hasText:'Inline'})
+ await expect(real.locator('.katex')).toHaveCount(2)
+ await expect(real.locator('.katex-display')).toHaveCount(1)
+ // A formula KaTeX cannot parse is one formula shown as an error, not a broken page.
+ await expect(real.locator('.katex-error')).toHaveCount(1)
+ await expect(page.locator('.prose-note strong',{hasText:'bold'})).toHaveCount(1)
+ expect(errors).toEqual([])
+})
