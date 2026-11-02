@@ -64,4 +64,19 @@ for(const [roomId,fixtures] of Object.entries(markup)){
   })
  })
 }
+// A note showing a figure from the room's folder (note-images.spec.ts): one room
+// has the file from the start, the other gets it uploaded during the test.
+const {sessionDir}=await import('../../server/src/workspace.js')
+const {writeFileSync}=await import('node:fs')
+const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==','base64')
+for(const [roomId,name,seeded] of [['browser-note-image','fig.png',true],['browser-note-image-late','late.png',false]] as const){
+ createSession(roomId,'Browser note image fixture',null)
+ const doc=getSessionDoc(roomId).doc
+ doc.transact(()=>{
+  const cells=doc.getArray('cells');cells.delete(0,cells.length)
+  const note=createCell('markdown',`Figure: ![figure](${name})`,`${roomId}-c0`);note.set('open',true);cells.push([note])
+  const code=createCell('code','print("after")',`${roomId}-c1`);code.set('open',true);cells.push([code])
+ })
+ if(seeded)writeFileSync(path.join(sessionDir(roomId),name),PNG)
+}
 await import('../../server/src/index.js')

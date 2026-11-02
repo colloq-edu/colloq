@@ -21,6 +21,10 @@ real utility classes, and only the built stylesheet says what they do. Its rooms
 are seeded in `server.mts` with fixed cell ids. `outputs.spec.ts` does the same
 for rich kernel output: a stylesheet in an output, `:host` included, must stay
 inside the output's box while pandas-style and SVG rules still style it.
+`note-images.spec.ts` checks that a figure from the room's folder in a note
+recovers by itself from a ticket request the network lost and from a file that
+was uploaded after the note was written — the retry is driven by the note's own
+effect, which only the built app runs.
 
 Playwright's [web server lifecycle](https://playwright.dev/docs/test-webserver)
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute)
