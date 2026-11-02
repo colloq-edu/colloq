@@ -27,6 +27,7 @@ import {
   MARKDOWN_FORBIDDEN_TAGS,
   noteClasses,
   noteReference,
+  OUTPUT_FORBIDDEN_ATTRS,
 } from '../web/src/lib/sanitize.js'
 import { safeStyle } from '../shared/note-css.js'
 
@@ -148,4 +149,20 @@ test("markdown() keeps the page's names out of a note before anything else draws
   // Before KaTeX and the table wrapper add classes of their own, or those go too.
   assert.ok(markdown.indexOf('noteClasses(') < markdown.indexOf('katex.renderToString'))
   assert.ok(markdown.indexOf('noteClasses(') < markdown.indexOf("box.className = 'table-scroll'"))
+})
+
+/* ----------------------------------------------------------------- output */
+
+test('kernel output cannot open anything in the top layer', () => {
+  // The shadow root and `contain: paint` hold every box the output lays out;
+  // the top layer is laid out above the page, past both. A manual popover in
+  // a `display(HTML(...))` covered the room after one click.
+  for (const attribute of ['popover', 'popovertarget', 'popovertargetaction', 'command', 'commandfor']) {
+    assert.ok(OUTPUT_FORBIDDEN_ATTRS.includes(attribute), `${attribute} reaches past the output's root`)
+  }
+  // Its stylesheets stay: `df.style` and a figure's own rules are why output has a root at all.
+  assert.ok(!OUTPUT_FORBIDDEN_ATTRS.includes('style') && !OUTPUT_FORBIDDEN_ATTRS.includes('class'))
+  const source = read('web/src/lib/render.svelte.ts')
+  const outputs = source.slice(source.indexOf('html: (markup)'))
+  assert.equal(outputs.match(/FORBID_ATTR: OUTPUT_FORBIDDEN_ATTRS/g)?.length, 2, 'html() or svg() lets the top layer through')
 })

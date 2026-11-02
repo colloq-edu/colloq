@@ -30,9 +30,30 @@
    * to the element's own box. The attribute `style="position:fixed;inset:0"` —
    * the very hole that was closed for notes by forbidding the attribute — no
    * longer covers the screen.
+   *
+   * But a root's stylesheet reaches one element outside its subtree, the host
+   * itself: that is what `:host` and `:host-context()` select. And the host
+   * was ours — the element in the page whose `contain: paint` was the whole
+   * defence. `:host { position: fixed !important; inset: 0 !important;
+   * z-index: 2147483647 }` in one output turned it into a black screen over
+   * the room (measured on the production build), containment and all,
+   * because containment applies to what is INSIDE an element, not to where
+   * the element itself goes. Nor can it be outweighed from outside: by CSS
+   * Scoping an `!important` rule from inside a shadow tree beats an
+   * `!important` one from the tree around it, the page's inline style
+   * included.
+   *
+   * So the content lives one root deeper. The host keeps a root of our own,
+   * with nothing in it but a frame, and the frame's root is where the output
+   * and its rules go. The output's `:host` now means the frame — an element
+   * that sits inside the host's paint containment, so whatever it is made to
+   * do — fixed, full-viewport, pushed off by a negative margin — happens
+   * within the host's box and is clipped at its edges. No rule has to be
+   * recognised for this, and a list of forbidden selectors would be one more
+   * thing to outguess.
    */
 
-  /** Shared by both kinds: the shadow root's host is an ordinary block. */
+  /** Shared by both kinds: the content's host — the frame — is an ordinary block. */
   const BASE = `
     :host { display: block; }
     :host([hidden]) { display: none; }
@@ -95,8 +116,15 @@
     const css = SCOPE_CSS[kind]
     if (!node) return
     // A second attachShadow on the same node throws, and the node survives a
-    // change of output: the root is created once and afterwards only rewritten.
-    const shadow = node.shadowRoot ?? node.attachShadow({ mode: 'open' })
+    // change of output: both roots and the frame between them are created once,
+    // and afterwards only the inner root is rewritten.
+    const outer = node.shadowRoot ?? node.attachShadow({ mode: 'open' })
+    let frame = outer.firstElementChild
+    if (!frame) {
+      frame = document.createElement('div')
+      outer.append(frame)
+    }
+    const shadow = frame.shadowRoot ?? frame.attachShadow({ mode: 'open' })
 
     /*
      * The markup is assembled in a `template`, not written into the root
@@ -126,6 +154,7 @@
   })
 </script>
 
-<!-- The shadow root's host. `contain: paint` is not about speed but about
-     `position: fixed` from inside no longer reaching the window. -->
+<!-- The outer root's host. `contain: paint` is not about speed but about
+     `position: fixed` from inside no longer reaching the window; the output's
+     own `:host` is the frame inside, never this element. -->
 <div bind:this={host} class={className} style="contain: paint"></div>

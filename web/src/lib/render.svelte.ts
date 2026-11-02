@@ -15,7 +15,13 @@
 
 import { foldAnsiColours, pendingEscape } from './ansi'
 import { safeStyle } from '@shared/note-css'
-import { MARKDOWN_FORBIDDEN_ATTRS, MARKDOWN_FORBIDDEN_TAGS, noteClasses, noteReference } from './sanitize'
+import {
+  MARKDOWN_FORBIDDEN_ATTRS,
+  MARKDOWN_FORBIDDEN_TAGS,
+  noteClasses,
+  noteReference,
+  OUTPUT_FORBIDDEN_ATTRS,
+} from './sanitize'
 
 export { ansi256ToBasic, foldAnsiColours, stripAnsi } from './ansi'
 
@@ -331,10 +337,15 @@ async function importRenderers(): Promise<Renderers> {
       return trail.html
     },
 
-    html: (markup) => DOMPurify.sanitize(markup),
+    // Output keeps its stylesheets for its shadow root (ScopedOutput.svelte),
+    // and loses only what reaches past any root: the top layer.
+    html: (markup) => DOMPurify.sanitize(markup, { FORBID_ATTR: OUTPUT_FORBIDDEN_ATTRS }),
 
     svg: (markup) =>
-      DOMPurify.sanitize(markup, { USE_PROFILES: { svg: true, svgFilters: true, html: true } }),
+      DOMPurify.sanitize(markup, {
+        USE_PROFILES: { svg: true, svgFilters: true, html: true },
+        FORBID_ATTR: OUTPUT_FORBIDDEN_ATTRS,
+      }),
   }
 }
 

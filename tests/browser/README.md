@@ -17,7 +17,9 @@ Code assertions exclude the remote-cursor name widgets from rendered code lines.
 are drawn into: the app's own classes, popovers, ids and `data-*` names. It needs
 the production build because the overlay it guards against is made of the app's
 real utility classes, and only the built stylesheet says what they do. Its rooms
-are seeded in `server.mts` with fixed cell ids.
+are seeded in `server.mts` with fixed cell ids. `outputs.spec.ts` does the same
+for rich kernel output: a stylesheet in an output, `:host` included, must stay
+inside the output's box while pandas-style and SVG rules still style it.
 
 Playwright's [web server lifecycle](https://playwright.dev/docs/test-webserver)
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute)

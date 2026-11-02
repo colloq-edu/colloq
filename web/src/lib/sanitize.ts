@@ -34,9 +34,11 @@
  * `df.style` is a real pandas feature and it emits a scoped <style>, so the
  * tag stays — the containment is done by construction instead of by a ban:
  * kernel HTML and SVG are drawn inside a shadow root (components/notebook/
- * ScopedOutput.svelte), where a stylesheet reaches only its own subtree,
- * `contain: paint` on the host takes the page away from `position: fixed`, and
- * `@import` is stripped in an inert <template> before the markup moves in.
+ * ScopedOutput.svelte), where a stylesheet reaches only its own subtree — its
+ * `:host` included, which is a frame of ours one root down, not the element in
+ * the page — `contain: paint` on that element takes the page away from
+ * `position: fixed`, and `@import` is stripped in an inert <template> before
+ * the markup moves in.
  * That is the whole reason the list above may be shorter for output than for a
  * note: a note is rendered straight into the page, output never is.
  *
@@ -100,15 +102,24 @@ export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form', 'audio', 'video', 'dial
  * who reads the room without a mouse. Nothing in a note needs focus it does
  * not already get from a link.
  */
-export const MARKDOWN_FORBIDDEN_ATTRS = [
-  'ping',
-  'popover',
-  'popovertarget',
-  'popovertargetaction',
-  'command',
-  'commandfor',
-  'tabindex',
-]
+export const MARKDOWN_FORBIDDEN_ATTRS = ['ping', ...topLayer(), 'tabindex']
+
+/**
+ * What kernel output may not carry even inside its shadow root.
+ *
+ * The root and the host's `contain: paint` hold every box the output can lay
+ * out — and the top layer is not laid out inside anything: it is above the
+ * page by definition. A `display(HTML(...))` with `<button popovertarget>`
+ * and `<div popover="manual">` covered the room after one click on the
+ * button, from inside the root, past the containment (measured). No library
+ * draws a table or a plot with these.
+ */
+export const OUTPUT_FORBIDDEN_ATTRS = topLayer()
+
+/** The attributes that open an element in the top layer: popovers, and dialogs by `command="show-modal"`. */
+function topLayer(): string[] {
+  return ['popover', 'popovertarget', 'popovertargetaction', 'command', 'commandfor']
+}
 
 /*
  * Names: what a note may still call things, after the lists above.
