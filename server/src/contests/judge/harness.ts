@@ -78,9 +78,14 @@ in /secret, the compiler's and the checker's to pipes this process reads.
 Time is the program's user + system time and memory its ru_maxrss, both from
 wait4. The memory has a floor: Linux starts a child's ru_maxrss at the RSS of
 the process it was forked from, so an empty C program reports what this
-harness held at the fork — about 10 MB, measured in the kernel image. Far
-below the smallest limit a contest may set (16 MB), and kept steady by doing
+harness held at the fork — about 11 MB, measured in the kernel image. Far
+below the smallest limit a contest may set (32 MB), and kept steady by doing
 every heavy check in a child of its own (isolated()).
+
+The program is one process, its threads aside: a seccomp filter refuses it
+every way to start another (OneProcess). ru_maxrss is the peak of one
+process, and of its children only the largest — never their sum — so two
+children of 64 MB each were OK under a limit of 96 (audit F09).
 
 Python 3.11 standard library only: the kernel images are python:3.11-slim, and
 nothing is installed into them for the judge's sake.
@@ -97,6 +102,7 @@ import resource
 import select
 import signal
 import stat
+import struct
 import sys
 import time
 import traceback
@@ -112,7 +118,10 @@ CHECKER_UID = 65533
 # The test suite's way in: the harness run by the system python3 with no
 # container around it — no privilege drop, no /proc sweep, every directory
 # named in the environment. main() refuses it as root, so that a variable in an
-# image can never turn the real judge into this.
+# image can never turn the real judge into this. On Linux the program is still
+# kept to one process (OneProcess); elsewhere (the suite on macOS) there is no
+# seccomp, a program may start processes, and its memory is its largest
+# process's peak, as it was everywhere before.
 NO_SANDBOX = os.environ.get("COLLOQ_JUDGE_NO_SANDBOX") == "1"
 
 HEADER_BYTES = 4 << 20
@@ -348,7 +357,132 @@ def drop_to_nobody():
     os.setresuid(NOBODY, NOBODY, NOBODY)
 
 
-def become_child(stdin_fd, stdout_fd, stderr_fd, keep, cwd, limits, nobody, oom):
+# What seccomp sees of a system call (struct seccomp_data, little-endian on
+# both machines the judge runs on): the call's number at offset 0, the
+# architecture at 4, the low half of the first argument at 16.
+AUDIT_ARCH_X86_64 = 0xC000003E
+AUDIT_ARCH_AARCH64 = 0xC00000B7
+X32_SYSCALL_BIT = 0x40000000
+CLONE_THREAD = 0x00010000
+PR_SET_SECCOMP = 22
+PR_SET_NO_NEW_PRIVS = 38
+SECCOMP_MODE_FILTER = 2
+# The filter's answers. Its errno values are Linux's, not the errno module's:
+# the rows are the same wherever they are built, and the suite reads them on
+# macOS, whose ENOSYS is 78.
+SECCOMP_RET_ALLOW = 0x7FFF0000
+SECCOMP_RET_EPERM = 0x00050000 | 1
+SECCOMP_RET_ENOSYS = 0x00050000 | 38
+SECCOMP_RET_KILL_PROCESS = 0x80000000
+
+
+def one_process_filter():
+    """The program's seccomp filter: struct sock_filter rows, packed, jumps resolved from labels.
+
+    Every way to start a process is refused, and a thread is not one: fork
+    and vfork answer EPERM, so does clone without CLONE_THREAD (glibc's fork,
+    posix_spawn and system() all come down to it), and clone3 answers ENOSYS,
+    the answer of a kernel that has none — glibc then falls back to clone,
+    whose flags a filter can read (clone3 keeps them behind a pointer). So
+    pthread_create, std::thread and Python's threading work as ever, and their
+    memory is the one process's. The numbers are each machine's own: aarch64
+    has no fork or vfork, and its 57 and 58 are close and vhangup.
+
+    A call of another ABI is never judged by these numbers: an architecture
+    other than the two (i386's int 0x80 on x86_64, AArch32 on aarch64, either
+    from a 32-bit binary the program wrote and ran) kills the program, and an
+    x32 number on x86_64 — the same calls with bit 30 set — answers ENOSYS, as
+    on a kernel built without x32. Docker's own filter stays in force beneath
+    this one; the kernel takes the stricter answer of the two.
+    """
+    LD, JEQ, JSET, RET = 0x20, 0x15, 0x45, 0x06
+    rows = [
+        (None, LD, 4, None, None),
+        (None, JEQ, AUDIT_ARCH_X86_64, "x86_64", None),
+        (None, JEQ, AUDIT_ARCH_AARCH64, "aarch64", "kill"),
+        ("x86_64", LD, 0, None, None),
+        (None, JSET, X32_SYSCALL_BIT, "enosys", None),
+        (None, JEQ, 57, "eperm", None),  # fork
+        (None, JEQ, 58, "eperm", None),  # vfork
+        (None, JEQ, 435, "enosys", None),  # clone3
+        (None, JEQ, 56, "clone", "allow"),  # clone
+        ("aarch64", LD, 0, None, None),
+        (None, JEQ, 435, "enosys", None),  # clone3
+        (None, JEQ, 220, "clone", "allow"),  # clone
+        ("clone", LD, 16, None, None),
+        (None, JSET, CLONE_THREAD, "allow", "eperm"),
+        ("allow", RET, SECCOMP_RET_ALLOW, None, None),
+        ("eperm", RET, SECCOMP_RET_EPERM, None, None),
+        ("enosys", RET, SECCOMP_RET_ENOSYS, None, None),
+        ("kill", RET, SECCOMP_RET_KILL_PROCESS, None, None),
+    ]
+    at = {row[0]: index for index, row in enumerate(rows) if row[0]}
+
+    def jump(index, label):
+        return 0 if label is None else at[label] - index - 1
+
+    return b"".join(struct.pack("=HBBI", code, jump(i, yes), jump(i, no), k) for i, (_, code, k, yes, no) in enumerate(rows))
+
+
+class OneProcess:
+    """The filter above, made ready once per submission, entered by each test's child last before exec.
+
+    Made ready HERE, in the harness, and only entered in the child: every page
+    the child touches before exec is in the program's ru_maxrss. For the same
+    reason it goes through _ctypes, the C core of ctypes, and not ctypes
+    itself: measured in the kernel image, an empty program's peak went from
+    10.3 MB to 11.0 MB this way, and to 12.2 MB through the ctypes package.
+
+    Not available is never "not confined": on a machine other than the two,
+    or where the kernel refuses the filter, the judge fails (SE) instead of
+    judging a program free to spread its memory. Only the suite off Linux runs
+    without it (NO_SANDBOX).
+    """
+
+    def __init__(self):
+        self.prctl = None
+        if NO_SANDBOX and not sys.platform.startswith("linux"):
+            return
+        machine = os.uname().machine
+        if machine not in ("x86_64", "aarch64"):
+            raise Failure("the judge runs programs on x86_64 and aarch64 only, not on %s" % machine)
+        import _ctypes
+
+        class Int(_ctypes._SimpleCData):
+            _type_ = "i"
+
+        class Word(_ctypes._SimpleCData):
+            _type_ = "L"
+
+        class Byte(_ctypes._SimpleCData):
+            _type_ = "B"
+
+        class Prctl(_ctypes.CFuncPtr):
+            _flags_ = _ctypes.FUNCFLAG_CDECL | _ctypes.FUNCFLAG_USE_ERRNO
+            _restype_ = Int
+            _argtypes_ = (Int, Word, Word, Word, Word)
+
+        def pinned(data):
+            block = type("Block", (_ctypes.Array,), {"_type_": Byte, "_length_": len(data)}).from_buffer_copy(data)
+            return block, _ctypes.addressof(block)
+
+        program = one_process_filter()
+        self.rows, rows_at = pinned(program)
+        # struct sock_fprog: the row count, then (aligned) the pointer to the rows.
+        self.fprog, self.fprog_at = pinned(struct.pack("@HP", len(program) // 8, rows_at))
+        self.prctl = Prctl(_ctypes.dlsym(_ctypes.dlopen(None), "prctl"))
+        self.errno = _ctypes.get_errno
+
+    def enter(self):
+        """From here on the calling process starts no other: no_new_privs (seccomp's condition for anyone without CAP_SYS_ADMIN), then the filter."""
+        if self.prctl is None:
+            return
+        if self.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 or self.prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, self.fprog_at, 0, 0) != 0:
+            code = self.errno()
+            raise OSError(code, "the program's seccomp filter: %s" % os.strerror(code))
+
+
+def become_child(stdin_fd, stdout_fd, stderr_fd, keep, cwd, limits, nobody, oom, alone=None):
     """Everything between fork and exec, in the order that works.
 
     A session of its own first, so that its descendants can be killed as one
@@ -357,7 +491,9 @@ def become_child(stdin_fd, stdout_fd, stderr_fd, keep, cwd, limits, nobody, oom)
     limits — closing everything above 2 has to see the old ceiling. Python
     ignores SIGPIPE and SIGXFSZ, and an ignored signal survives exec: without
     the reset a C program over its output cap would get EFBIG instead of
-    SIGXFSZ. The uid last, because everything before it needs root.
+    SIGXFSZ. The uid after them, because everything before it needs root.
+    A test's program ('alone', its OneProcess) enters its filter last, right
+    before exec: what the filter is for is the program, not this preparation.
     """
     os.setsid()
     if oom:
@@ -379,13 +515,15 @@ def become_child(stdin_fd, stdout_fd, stderr_fd, keep, cwd, limits, nobody, oom)
     os.umask(0o022)
     if nobody:
         drop_to_nobody()
+    if alone is not None:
+        alone.enter()
 
 
 class SpawnError(Exception):
     pass
 
 
-def spawn(argv, env, cwd, stdin_fd, stdout_fd, stderr_fd, limits, nobody, oom):
+def spawn(argv, env, cwd, stdin_fd, stdout_fd, stderr_fd, limits, nobody, oom, alone=None):
     """Fork and exec; a failure before or at exec comes back as SpawnError, not as an exit code.
 
     The classic close-on-exec pipe: a successful exec closes it with nothing
@@ -397,7 +535,7 @@ def spawn(argv, env, cwd, stdin_fd, stdout_fd, stderr_fd, limits, nobody, oom):
     if pid == 0:
         try:
             os.close(reader)
-            become_child(stdin_fd, stdout_fd, stderr_fd, writer, cwd, limits, nobody, oom)
+            become_child(stdin_fd, stdout_fd, stderr_fd, writer, cwd, limits, nobody, oom, alone)
             os.execve(argv[0], argv, env)
         except BaseException as error:
             try:
@@ -1254,7 +1392,7 @@ def verdict_of(ended, job, out_size, err_size):
     return None
 
 
-def run_test(job, test, argv):
+def run_test(job, test, argv, alone):
     n = test["n"]
     limit = job["timeLimitMs"]
     cap = job["outputCap"]
@@ -1276,7 +1414,7 @@ def run_test(job, test, argv):
     ]
     started = time.monotonic()
     try:
-        pid = spawn(argv, base_env(RUN), RUN, given, printed, complained, limits, nobody=True, oom=True)
+        pid = spawn(argv, base_env(RUN), RUN, given, printed, complained, limits, nobody=True, oom=True, alone=alone)
     except SpawnError as error:
         raise Failure("the program could not be started on test %d: %s" % (n, error))
     finally:
@@ -1289,6 +1427,9 @@ def run_test(job, test, argv):
 
 
 def judge(job):
+    # Before the compiler: a machine where the program cannot be kept to one
+    # process is the judge's failure, and needs no build to find out.
+    alone = OneProcess()
     emit({"t": "compile"})
     started = time.monotonic()
     make_dir(RUN, 0o777)
@@ -1309,7 +1450,7 @@ def judge(job):
         if mode == "ioi" and test["group"] in failed_groups:
             continue
         emit({"t": "start", "n": n})
-        ended, input_path = run_test(job, test, argv)
+        ended, input_path = run_test(job, test, argv, alone)
         out_size, err_size = size_of(OUT), size_of(ERR)
         verdict = verdict_of(ended, job, out_size, err_size)
         line = {"t": "test", "n": n, "ms": ended.cpu_ms, "kb": ended.kb}

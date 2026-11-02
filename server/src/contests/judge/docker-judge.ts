@@ -18,8 +18,10 @@
  * 2. Root inside, with three capabilities kept (`SETUID`, `SETGID`, `KILL`).
  *    The harness is PID 1: it drops to `nobody` to compile and to run each
  *    test, and it kills every `nobody` process after a test so a double-forked
- *    helper cannot outlive it. A notebook needs none of this — it is one
- *    uid 1000 process the cgroup and the wall clock bound from outside.
+ *    helper cannot outlive it (the compiler's; a test's program can start no
+ *    process at all, judge.py · OneProcess). A notebook needs none of this —
+ *    it is one uid 1000 process the cgroup and the wall clock bound from
+ *    outside.
  *
  * 3. Three tmpfs, each with a job: `/work` (the compiled binary and the
  *    program's scratch, `exec`), `/secret` (the answers, the outputs and the

@@ -16,6 +16,9 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { judgeDir, JUDGE_FILE } from '../server/src/contests/judge/harness.ts'
 import { buildRequest, harnessRunnable, runHarnessNoSandbox, type BuildOptions } from './_contest-judge.mts'
 
 const runnable = harnessRunnable()
@@ -183,7 +186,19 @@ test('the harness protocol is JSON lines: compile, compiled, start, test, done',
   assert.equal(run.exitCode, 0)
 })
 
-test('a leftover process started by one test does not outlive it', { skip: SKIP }, () => {
+/*
+ * The program is one process (audit F09): the harness puts it under a seccomp
+ * filter that refuses every way to start another, threads aside, so the peak
+ * wait4 reports is the whole program's. Linux has the filter, in the
+ * container and in this no-sandbox mode alike; off Linux — this suite on
+ * macOS — a program may still start processes, and the reaping below is all
+ * that stands between them and the next test.
+ */
+const LINUX = process.platform === 'linux'
+const ONE_PROCESS = SKIP || (LINUX ? false : 'no seccomp off Linux: here the no-sandbox harness leaves a program free to start processes')
+const FORKS = SKIP || (LINUX ? 'on Linux a program cannot start a process at all (the one-process cases)' : false)
+
+test('a leftover process started by one test does not outlive it', { skip: FORKS }, () => {
   // Spawn a child that would sleep for a minute, then exit the test cleanly.
   // kill_leftovers() reaps it (no-sandbox reaps rather than killing by uid),
   // so the next test is OK and the run ends promptly, not after the child's sleep.
@@ -199,4 +214,86 @@ test('a leftover process started by one test does not outlive it', { skip: SKIP 
     tests: [{ ordinal: 1, input: 'hi\n', answer: 'hi\n' }],
   })
   assert.equal(run.outcome.verdict, 'OK')
+})
+
+test('on Linux a program is one process: fork, subprocess and multiprocessing fail, threads work', { skip: ONE_PROCESS }, () => {
+  const sum = 'a, b = map(int, sys.stdin.readline().split())\nprint(a + b)\n'
+  const ways: Record<string, string> = {
+    'os.fork': 'import os, sys\nif os.fork() == 0:\n    os._exit(0)\nos.wait()\n' + sum,
+    subprocess: 'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "pass"], check=True)\n' + sum,
+    multiprocessing: 'import multiprocessing, sys\nif __name__ == "__main__":\n    with multiprocessing.Pool(2) as pool:\n        pool.map(abs, [1, 2])\n' + sum,
+  }
+  const tests = [{ ordinal: 1, input: '1 2\n', answer: '3\n' }]
+  for (const [way, source] of Object.entries(ways)) {
+    const run = judge({ source, tests })
+    assert.equal(run.outcome.verdict, 'RE', `${way}: ${JSON.stringify(run.outcome)}`)
+    assert.match(run.outcome.tests[0].stderr ?? '', /PermissionError|Operation not permitted/, way)
+  }
+  const threads = judge({
+    source: 'import sys, threading\nparts = []\nworkers = [threading.Thread(target=parts.append, args=(n,)) for n in map(int, sys.stdin.readline().split())]\n' +
+      'for w in workers:\n    w.start()\nfor w in workers:\n    w.join()\nprint(sum(parts))\n',
+    tests,
+  })
+  assert.equal(threads.outcome.verdict, 'OK', JSON.stringify(threads.outcome))
+})
+
+/**
+ * Classic BPF as seccomp runs it, the five instructions the filter is made of,
+ * over a struct seccomp_data of the call's number, the architecture and the
+ * low half of the first argument: the filter's every decision, on any
+ * machine — the x86_64 half included, which the Docker suite here (aarch64)
+ * never reaches.
+ */
+function decide(rows: Buffer, nr: number, arch: number, arg0 = 0): number {
+  const field = (offset: number): number => {
+    if (offset === 0) return nr >>> 0
+    if (offset === 4) return arch >>> 0
+    if (offset === 16) return arg0 >>> 0
+    throw new Error(`the filter reads offset ${offset}`)
+  }
+  let a = 0
+  for (let pc = 0; pc * 8 < rows.length;) {
+    const code = rows.readUInt16LE(pc * 8), yes = rows[pc * 8 + 2], no = rows[pc * 8 + 3], k = rows.readUInt32LE(pc * 8 + 4)
+    if (code === 0x20) { a = field(k); pc++ }
+    else if (code === 0x15) pc += 1 + (a === k ? yes : no)
+    else if (code === 0x45) pc += 1 + ((a & k) !== 0 ? yes : no)
+    else if (code === 0x06) return k
+    else throw new Error(`instruction ${code.toString(16)} at ${pc}`)
+  }
+  throw new Error('the filter ran off its end')
+}
+
+test('the one-process filter answers by each machine\'s own numbers, and refuses another ABI outright', { skip: SKIP }, () => {
+  const read = spawnSync('python3', ['-I', '-c', 'import runpy, sys; sys.stdout.write(runpy.run_path(sys.argv[1], run_name="judge")["one_process_filter"]().hex())',
+    path.join(judgeDir(), JUDGE_FILE)], { encoding: 'utf8' })
+  assert.equal(read.status, 0, read.stderr)
+  const rows = Buffer.from(read.stdout, 'hex')
+  const ALLOW = 0x7fff0000, EPERM = 0x50001, ENOSYS = 0x50026, KILL = 0x80000000
+  const X86_64 = 0xc000003e, AARCH64 = 0xc00000b7, I386 = 0x40000003, ARM = 0x40000028
+  // The flags glibc passes: fork, posix_spawn (and so system()), pthread_create.
+  const FORK = 0x01200011, SPAWN = 0x4111, THREAD = 0x3d0f00
+  const cases: Array<[string, number, number, number, number]> = [
+    ['x86_64 fork', 57, X86_64, 0, EPERM],
+    ['x86_64 vfork', 58, X86_64, 0, EPERM],
+    ['x86_64 clone as fork', 56, X86_64, FORK, EPERM],
+    ['x86_64 clone as posix_spawn', 56, X86_64, SPAWN, EPERM],
+    ['x86_64 clone as a thread', 56, X86_64, THREAD, ALLOW],
+    ['x86_64 clone3', 435, X86_64, 0, ENOSYS],
+    ['x86_64 read', 0, X86_64, 0, ALLOW],
+    ['x86_64 execve', 59, X86_64, 0, ALLOW],
+    ['x32 clone', 0x40000000 + 56, X86_64, FORK, ENOSYS],
+    ['x32 read', 0x40000000, X86_64, 0, ENOSYS],
+    ['aarch64 clone as fork', 220, AARCH64, FORK, EPERM],
+    ['aarch64 clone as posix_spawn', 220, AARCH64, SPAWN, EPERM],
+    ['aarch64 clone as a thread', 220, AARCH64, THREAD, ALLOW],
+    ['aarch64 clone3', 435, AARCH64, 0, ENOSYS],
+    ['aarch64 close (x86_64 fork\'s number)', 57, AARCH64, 0, ALLOW],
+    ['aarch64 vhangup (x86_64 vfork\'s number)', 58, AARCH64, 0, ALLOW],
+    ['aarch64 read', 63, AARCH64, 0, ALLOW],
+    ['i386 fork through int 0x80', 2, I386, 0, KILL],
+    ['i386 anything', 3, I386, 0, KILL],
+    ['AArch32 clone', 120, ARM, FORK, KILL],
+  ]
+  for (const [name, nr, arch, arg0, expected] of cases)
+    assert.equal(decide(rows, nr, arch, arg0).toString(16), expected.toString(16), name)
 })
