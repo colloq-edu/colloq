@@ -6,7 +6,8 @@
  * that must NOT count: another key, an expired one, the wrong audience, the
  * HMAC-with-the-public-key forgery, `none`. The rest pins what a verified one
  * does — staff by email, staff added by role, one participant per person in a
- * room — and that without a token nothing changes.
+ * room, the same role at every door of a room whatever cookie the browser
+ * kept — and that without a token nothing changes.
  */
 import './_env.mts'
 import crypto from 'node:crypto'
@@ -15,16 +16,19 @@ import http from 'node:http'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { WebSocket } from 'ws'
 import { STAFF_COOKIE, type AdminMe, type InstanceState } from '../shared/admin.js'
-import type { JoinResponse, SessionInfo } from '../shared/protocol.js'
+import type { HandoffResponse, JoinResponse, SessionInfo, SessionMe } from '../shared/protocol.js'
 import { TEST_ROOT } from './_env.mts'
 import { originAllowed, readSetupToken, staffCookieValue, staffFromCookieHeader, verifySetupToken } from '../server/src/admin/auth.js'
 import { createTeacher, getTeacherByEmail } from '../server/src/admin/store.js'
 import { app } from '../server/src/app.js'
+import { banParticipant } from '../server/src/bans.js'
 import { createSession } from '../server/src/db.js'
 import { addressForLimits, forwardedHost, parseInboundPolicy } from '../server/src/net/inbound.js'
 import { identityFromClaims, parseSsoPolicy, socketCookieHeader, useSsoPolicy } from '../server/src/sso/identity.js'
 import { importJwks, KeyCache, verifyJwt, type JwtRules } from '../server/src/sso/jwt.js'
+import { handleUpgrade } from '../server/src/upgrade.js'
 
 /* ------------------------------------------------------------- the keys */
 
@@ -282,16 +286,19 @@ before(async () => {
     AUTH_JWT_TEACHER_ROLES: 'colloq-teacher',
   }))
   server = http.createServer(app)
+  // The sockets too: a room's role is decided at two doors, and they must agree.
+  server.on('upgrade', handleUpgrade)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 })
 
 after(() => {
+  server?.closeAllConnections()
   server?.close()
   useSsoPolicy(null)
 })
 
-function call(method: string, route: string, init: { token?: string; cookie?: string; origin?: string; body?: unknown } = {}) {
+function call(method: string, route: string, init: { token?: string; cookie?: string; origin?: string; bearer?: string; body?: unknown } = {}) {
   return fetch(`${base}${route}`, {
     method,
     headers: {
@@ -299,6 +306,8 @@ function call(method: string, route: string, init: { token?: string; cookie?: st
       ...(init.token ? { 'teleport-jwt-assertion': init.token } : {}),
       ...(init.cookie ? { cookie: init.cookie } : {}),
       ...(init.origin ? { origin: init.origin } : {}),
+      // The room's own token, the way the room page sends it.
+      ...(init.bearer ? { authorization: `Bearer ${init.bearer}` } : {}),
     },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   })
@@ -508,4 +517,142 @@ test('the staff cookie rides on pages and API calls, never on the build\'s cache
   assert.equal(staffCookieOf(asset), null)
   const page = await fetch(`${base}/admin`, { headers: { 'teleport-jwt-assertion': fresh, accept: 'text/html', 'sec-fetch-mode': 'navigate' } })
   assert.ok(staffCookieOf(page), 'a navigation signs the teacher in')
+})
+
+/* --------------------------------- the room's own doors on a shared computer */
+
+/**
+ * The lab computer of the tests above, one step further: the dean taught
+ * from it, then a student signed in to the proxy there. Until a response
+ * clears it the browser still sends the dean's cookie, and the student holds
+ * an ordinary participant token for a room the dean runs (an owner runs them
+ * all).
+ */
+async function sharedComputer(room: string) {
+  createSession(room, 'Общий компьютер', null)
+  const dean = getTeacherByEmail('dean@corp.test')
+  assert.ok(dean)
+  const left = `${STAFF_COOKIE}=${staffCookieValue(dean)}`
+  const student = teleport('lab.student@corp.test')
+  const joined = (await (await call('POST', `/api/sessions/${room}/join`, { token: student, cookie: left, body: { name: 'x' } })).json()) as JoinResponse
+  assert.equal(joined.participant.role, 'participant')
+  return { left, student, token: joined.token, participantId: joined.participant.id }
+}
+
+/** The role the control socket announces first for these credentials, or the status that refused the upgrade. */
+function socketRole(room: string, init: { token?: string; cookie?: string; bearer: string }): Promise<string> {
+  const ws = new WebSocket(`${base.replace(/^http/, 'ws')}/control/${room}?token=${encodeURIComponent(init.bearer)}`, {
+    headers: {
+      ...(init.token ? { 'teleport-jwt-assertion': init.token } : {}),
+      ...(init.cookie ? { cookie: init.cookie } : {}),
+    },
+  })
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.terminate()
+      reject(new Error('the control socket announced no role'))
+    }, 5_000)
+    ws.on('unexpected-response', (_request, response) => {
+      clearTimeout(timer)
+      resolve(`refused ${response.statusCode}`)
+      ws.terminate()
+    })
+    ws.on('message', (raw) => {
+      const frame = JSON.parse(String(raw)) as { t: string; role?: string }
+      if (frame.t !== 'role') return
+      clearTimeout(timer)
+      ws.close()
+      resolve(frame.role ?? 'none')
+    })
+    ws.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+  })
+}
+
+test('a teacher\'s cookie left on a shared computer is not host in the room\'s API for the student the proxy vouches for', async () => {
+  const room = 'sso-room-left-cookie'
+  const { left, student, token } = await sharedComputer(room)
+  // The dean, from his own browser, marks a version to put back later.
+  const dean = teleport('dean@corp.test')
+  const teacher = (await (await call('POST', `/api/sessions/${room}/join`, { token: dean, body: { name: 'x' } })).json()) as JoinResponse
+  assert.equal(teacher.participant.role, 'host')
+  const own = { token: dean, bearer: teacher.token }
+  const marked = await call('POST', `/api/sessions/${room}/history/checkpoint`, { ...own, cookie: left, body: { label: 'до правок' } })
+  assert.equal(marked.status, 201, await marked.clone().text())
+  const { seq } = (await marked.json()) as { seq: number }
+
+  // Every host door at once, so a failure names all of them and not the first.
+  const as = { token: student, cookie: left, bearer: token }
+  const me = (await (await call('GET', `/api/sessions/${room}/me`, as)).json()) as SessionMe
+  const byStudent = {
+    me: me.role,
+    staffGuest: me.staffGuest ?? null,
+    rules: (await call('PATCH', `/api/sessions/${room}/rules`, { ...as, body: { rules: { run: 'host' } } })).status,
+    activity: (await call('GET', `/api/sessions/${room}/activity`, as)).status,
+    checkpoint: (await call('POST', `/api/sessions/${room}/history/checkpoint`, { ...as, body: { label: 'чужая метка' } })).status,
+    restore: (await call('POST', `/api/sessions/${room}/history/${seq}/restore`, { ...as, body: {} })).status,
+  }
+  assert.deepEqual(byStudent, { me: 'participant', staffGuest: null, rules: 403, activity: 403, checkpoint: 403, restore: 403 })
+
+  // The dean runs the room with the cookie his browser keeps, and from the
+  // very first request too, before the cookie of a sign-in reached a browser.
+  const byDean = {
+    withCookie: (await call('GET', `/api/sessions/${room}/activity`, { ...own, cookie: left })).status,
+    restore: (await call('POST', `/api/sessions/${room}/history/${seq}/restore`, { ...own, body: {} })).status,
+    rules: (await call('PATCH', `/api/sessions/${room}/rules`, { ...own, body: { rules: { run: 'host' } } })).status,
+    activity: (await call('GET', `/api/sessions/${room}/activity`, own)).status,
+  }
+  assert.deepEqual(byDean, { withCookie: 200, restore: 200, rules: 200, activity: 200 })
+})
+
+test('a ban holds for the student the proxy vouches for, whatever teacher\'s cookie the browser kept', async () => {
+  const room = 'sso-room-left-cookie-ban'
+  const { left, student, token, participantId } = await sharedComputer(room)
+  assert.ok(banParticipant({ sessionId: room, participantId, ip: null, byTeacher: 'Декан' }))
+  const as = { token: student, cookie: left, bearer: token }
+
+  assert.equal((await call('GET', `/api/sessions/${room}/history`, as)).status, 403, 'the teacher\'s cookie walked a banned student past the ban')
+  const me = (await (await call('GET', `/api/sessions/${room}/me`, as)).json()) as SessionMe
+  assert.ok(me.ban, 'the room did not tell the student about the ban')
+  assert.equal(me.role, null)
+  assert.equal((await call('POST', `/api/sessions/${room}/join`, { token: student, cookie: left, body: { name: 'x' } })).status, 403)
+  assert.equal(await socketRole(room, as), 'refused 403')
+})
+
+test('the control socket gives the same identity and cookie the same role as the room\'s API', async () => {
+  const room = 'sso-room-left-cookie-socket'
+  const { left, student, token } = await sharedComputer(room)
+  const dean = teleport('dean@corp.test')
+  const teacher = (await (await call('POST', `/api/sessions/${room}/join`, { token: dean, body: { name: 'x' } })).json()) as JoinResponse
+  const cases = [
+    { who: 'the student the proxy vouches for, on the teacher\'s cookie', init: { token: student, cookie: left, bearer: token }, role: 'participant' },
+    { who: 'the teacher the proxy vouches for, before any cookie', init: { token: dean, bearer: teacher.token }, role: 'host' },
+    { who: 'the same browser with no token from the proxy: its cookie decides, as before', init: { cookie: left, bearer: token }, role: 'host' },
+    { who: 'no token and no cookie', init: { bearer: token }, role: 'participant' },
+  ]
+  for (const { who, init, role } of cases) {
+    const me = (await (await call('GET', `/api/sessions/${room}/me`, init)).json()) as SessionMe
+    assert.equal(me.role, role, `the room's API: ${who}`)
+    assert.equal(await socketRole(room, init), role, `the control socket: ${who}`)
+  }
+})
+
+test('a console handed off to a tablet stays host in the room\'s API, with the proxy in front or without it', async () => {
+  const room = 'sso-room-tablet'
+  createSession(room, 'Планшет', null)
+  const dean = teleport('dean@corp.test')
+  const teacher = (await (await call('POST', `/api/sessions/${room}/join`, { token: dean, body: { name: 'Декан' } })).json()) as JoinResponse
+  const handed = await call('POST', `/api/sessions/${room}/handoff`, { token: dean, bearer: teacher.token, body: {} })
+  assert.equal(handed.status, 200, await handed.clone().text())
+  const { key } = (await handed.json()) as HandoffResponse
+  const claimed = await call('POST', `/api/sessions/${room}/handoff/claim`, { body: { key } })
+  assert.equal(claimed.status, 200, await claimed.clone().text())
+  const tablet = (await claimed.json()) as JoinResponse
+  // The tablet carries neither the cookie nor, on the room's own network, a token from the proxy.
+  assert.equal((await call('PATCH', `/api/sessions/${room}/rules`, { bearer: tablet.token, body: { rules: { run: 'host' } } })).status, 200)
+  assert.equal(await socketRole(room, { bearer: tablet.token }), 'host')
+  // Behind the proxy it signs in as the teacher it belongs to.
+  assert.equal((await call('GET', `/api/sessions/${room}/activity`, { token: dean, bearer: tablet.token })).status, 200)
 })

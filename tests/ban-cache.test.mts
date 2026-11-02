@@ -43,31 +43,31 @@ function insertBehindTheBack(sessionId: string, participantId: string, until: nu
 test('in a room without bans the second question does not reach the database', () => {
   const { id, petya } = room()
   // The first read is honest: it both removes the expired and sets the number.
-  assert.equal(banFor(id, petya, undefined), null)
+  assert.equal(banFor(id, petya, null, null), null)
 
   insertBehindTheBack(id, petya, Date.now() + 60_000)
   assert.equal(
-    banFor(id, petya, undefined),
+    banFor(id, petya, null, null),
     null,
     'the room had no bans, yet the query still went to the database',
   )
 
   // And this is not blindness but not knowing: the product reads the list through its own door and sees it.
   assert.equal(listBans(id, null).length, 1)
-  assert.ok(banFor(id, petya, undefined), 'the list that was read never reached the check')
+  assert.ok(banFor(id, petya, null, null), 'the list that was read never reached the check')
 })
 
 test('a ban takes effect at once: the cache is forgotten where the row is created', () => {
   const { id, petya } = room()
-  assert.equal(banFor(id, petya, undefined), null, 'the person is banned before the ban')
+  assert.equal(banFor(id, petya, null, null), null, 'the person is banned before the ban')
 
   const ban = banParticipant({ sessionId: id, participantId: petya, ip: null, byTeacher: 'Ада' })
   assert.ok(ban)
-  const caught = banFor(id, petya, undefined)
+  const caught = banFor(id, petya, null, null)
   assert.equal(caught?.id, ban.id, 'the banned person got through the door while the cache remembered yesterday')
 
   assert.equal(liftBan(id, ban.id), true)
-  assert.equal(banFor(id, petya, undefined), null, 'a lifted ban keeps holding')
+  assert.equal(banFor(id, petya, null, null), null, 'a lifted ban keeps holding')
 })
 
 test('the term runs out by itself: the number does not need anyone to forget it', async () => {
@@ -80,11 +80,11 @@ test('the term runs out by itself: the number does not need anyone to forget it'
     until: Date.now() + 120,
   })
   assert.ok(ban)
-  assert.ok(banFor(id, petya, undefined), 'the ban does not take effect while its term is running')
+  assert.ok(banFor(id, petya, null, null), 'the ban does not take effect while its term is running')
 
   await sleep(200)
   assert.equal(
-    banFor(id, petya, undefined),
+    banFor(id, petya, null, null),
     null,
     'not a second past the term, yet the cache keeps the door shut',
   )

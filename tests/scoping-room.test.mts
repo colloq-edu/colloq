@@ -19,6 +19,7 @@ import { WebSocket } from 'ws'
 import type { AdminSeminar } from '../shared/admin.js'
 import type { Course } from '../shared/publish.js'
 import type { HandoffResponse, JoinResponse, SessionMe } from '../shared/protocol.js'
+import { staffFromCookieHeader } from '../server/src/admin/auth.js'
 import { onStaffAuthorizationChanged } from '../server/src/admin/store.js'
 import { banFor, banParticipant } from '../server/src/bans.js'
 import { verifyToken } from '../server/src/auth.js'
@@ -40,7 +41,7 @@ async function join(cookie: string | undefined, name: string): Promise<JoinRespo
   return (await res.json()) as JoinResponse
 }
 
-const as = (cookie: string | undefined, participantId = 'p_nobody') => roleFor(cookie, { sessionId: room, participantId })
+const as = (cookie: string | undefined, participantId = 'p_nobody') => roleFor(staffFromCookieHeader(cookie), { sessionId: room, participantId })
 
 before(async () => {
   app = await startApp()
@@ -100,9 +101,9 @@ test('the cookie alone uploads only into a room its holder teaches', async () =>
 test('the ban exemption is for the room\'s own staff, not for every cookie', async () => {
   const guest = await join(boris.cookie, 'Борис ещё раз')
   assert.ok(banParticipant({ sessionId: room, participantId: guest.participant.id, ip: null, byTeacher: 'Анна' }))
-  assert.ok(banFor(room, guest.participant.id, boris.cookie), 'a guest teacher walked past the host\'s ban')
+  assert.ok(banFor(room, guest.participant.id, staffFromCookieHeader(boris.cookie), null), 'a guest teacher walked past the host\'s ban')
   // The room's teacher on the same browser id is let through: a slip must not lock them out.
-  assert.equal(banFor(room, guest.participant.id, anna.cookie), null)
+  assert.equal(banFor(room, guest.participant.id, staffFromCookieHeader(anna.cookie), null), null)
 })
 
 test('the page\'s door gives the room to its teachers, not to every member of staff', async () => {
@@ -138,14 +139,14 @@ test('taking a room out of the course takes the course teacher\'s rights in it a
   // A second course teacher who is not the author loses it with the unseat.
   const vera = staffMember('Вера Соавтор')
   assert.equal((await call(app.base, 'POST', `/api/admin/courses/${course}/teachers`, { cookie: anna.cookie, body: { staffId: vera.teacher.id } })).status, 201)
-  assert.equal(roleFor(vera.cookie, { sessionId: room, participantId: 'p' }), 'participant')
+  assert.equal(roleFor(staffFromCookieHeader(vera.cookie), { sessionId: room, participantId: 'p' }), 'participant')
   const now = await load()
   const back = await call(app.base, 'PUT', `/api/admin/courses/${course}/items`, {
     cookie: anna.cookie,
     body: { rev: now.rev, items: [...now.items, { kind: 'seminar', sessionId: room }] },
   })
   assert.equal(back.status, 200)
-  assert.equal(roleFor(vera.cookie, { sessionId: room, participantId: 'p' }), 'host', 'the seat did not reach the room at once')
+  assert.equal(roleFor(staffFromCookieHeader(vera.cookie), { sessionId: room, participantId: 'p' }), 'host', 'the seat did not reach the room at once')
 })
 
 test('a console handed to a tablet stops being host when its teacher stops teaching the room', async () => {

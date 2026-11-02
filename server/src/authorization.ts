@@ -1,6 +1,5 @@
 /** Durable authority is resolved from the grant source, never the role in a token. */
-import { staffFromCookieHeader } from './admin/auth.js'
-import { canSeeRoom, staffById } from './admin/access.js'
+import { canSeeRoom, staffById, type StaffLike } from './admin/access.js'
 import { staffAuthorizationVersion } from './admin/store.js'
 import { isTokenHost } from './db.js'
 import type { TokenPayload } from './auth.js'
@@ -8,7 +7,18 @@ import type { TokenPayload } from './auth.js'
 /**
  * Host or participant, for this request in this room.
  *
- * A staff cookie makes its holder host only in a room they teach
+ * `staff` is the staff account the request speaks for, as its own door
+ * decided it: `currentStaff(req)` for an HTTP request (admin/auth.ts), where a
+ * sign-in proxy that vouched for the person has the last word; for a socket,
+ * the cookie header the proxy has had its say on (upgrade.ts,
+ * sso/identity.ts · socketCookieHeader). It is the account and not a Cookie
+ * header on purpose: a header here is something a door can hand over raw,
+ * and the room's REST API did. On a lab computer still holding a teacher's
+ * cookie, the student signed in through the proxy was refused staff by the
+ * panel and by the sockets, and was the room's host in its API: rules,
+ * history restore, the class activity.
+ *
+ * A staff account makes its holder host only in a room they teach
  * (admin/access.ts · canSeeRoom): its own teachers, the teachers of any
  * course that seats it, and owners. Until 0.19 any cookie was host in every
  * room on the instance, which on a university install meant every lecturer
@@ -21,10 +31,9 @@ import type { TokenPayload } from './auth.js'
  * the moment they no longer do, not thirty days later when the token expires.
  */
 export function roleFor(
-  cookieHeader: string | undefined,
+  staff: StaffLike | null | undefined,
   payload: Pick<TokenPayload, 'sessionId' | 'participantId' | 'staff' | 'staffVersion'>,
 ): TokenPayload['role'] {
-  const staff = staffFromCookieHeader(cookieHeader)
   if (staff && canSeeRoom(staff, payload.sessionId)) return 'host'
   const handedOff = tokenStaff(payload)
   if (handedOff && canSeeRoom(staffById(handedOff), payload.sessionId)) return 'host'

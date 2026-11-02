@@ -42,10 +42,14 @@ export function authorizeSocket(ws: WebSocket, credentials?: SocketCredentials):
   ws.on('error', unsubscribe)
   return () => {
     if (!valid) return false
+    // The header is the one the upgrade read, which the sign-in proxy has had
+    // its say on (sso/identity.ts · socketCookieHeader); its cookie is checked
+    // again on every frame because a rotated link or a deleted row breaks it.
+    const now = staffFromCookieHeader(cookieHeader)
     if ((staffId && staffAuthorizationVersion(staffId) !== version) ||
-        (staff && !staffFromCookieHeader(cookieHeader)) ||
+        (staff && !now) ||
         (payload.iat !== undefined && Date.now() - payload.iat > TOKEN_MAX_AGE_MS) ||
-        roleFor(cookieHeader, payload) !== payload.role) revoke()
+        roleFor(now, payload) !== payload.role) revoke()
     return valid
   }
 }

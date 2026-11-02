@@ -24,10 +24,10 @@ import {
   type RoomAccess,
   type RoomDoor,
 } from '@shared/publish'
-import { canSeeRoom } from '../admin/access.js'
+import { canSeeRoom, type StaffLike } from '../admin/access.js'
 import { currentStaff } from '../admin/auth.js'
 import { verifyToken } from '../auth.js'
-import { banFor } from '../bans.js'
+import { banFor, deviceOf } from '../bans.js'
 import { finishedAt, getParticipant, getSession } from '../db.js'
 import { isArchived } from '../routes/admin-instance.js'
 
@@ -54,18 +54,20 @@ export function readDoorTokens(body: unknown): string[] | null {
  * Whether one of the tokens is a participant of this room who may still come
  * in: signed by this instance, not expired, minted for this very room, a row
  * the room knows, and no ban in force on them or on this browser's device
- * mark (bans.ts · banFor, the same check every door of the room asks).
+ * mark (bans.ts · banFor, the same check every door of the room asks, with
+ * the same staff account: `currentStaff`, not the request's raw cookie).
  */
 export function memberOf(
   sessionId: string,
   tokens: readonly string[],
-  cookie: string | undefined,
+  staff: StaffLike | null,
+  device: string | null,
 ): boolean {
   for (const token of tokens) {
     const payload = verifyToken(token)
     if (!payload || payload.sessionId !== sessionId) continue
     if (!getParticipant(sessionId, payload.participantId)) continue
-    if (banFor(sessionId, payload.participantId, cookie)) continue
+    if (banFor(sessionId, payload.participantId, staff, device)) continue
     return true
   }
   return false
@@ -108,7 +110,7 @@ export function roomDoor(
     return { access: 'none', member: false, staff: signedIn !== null, room: null }
   }
   const staff = canSeeRoom(signedIn, sessionId)
-  const member = memberOf(sessionId, tokens, req.headers.cookie)
+  const member = memberOf(sessionId, tokens, signedIn, deviceOf(req.headers.cookie))
   const allowed = staff || access === 'anyone' || (access === 'members' && member)
   if (!allowed) return { access, member, staff, room: null }
   const live = finishedAt(sessionId) === null && !isArchived(sessionId)

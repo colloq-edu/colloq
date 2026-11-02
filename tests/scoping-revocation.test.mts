@@ -27,6 +27,7 @@ import { seatRoom } from '../server/src/admin/seat.js'
 import { recordQuestion } from '../server/src/admin/usage.js'
 import { banParticipant } from '../server/src/bans.js'
 import { signHostToken } from '../server/src/auth.js'
+import { staffFromCookieHeader } from '../server/src/admin/auth.js'
 import { roleFor } from '../server/src/authorization.js'
 import { createSession, getParticipant, syncParticipantRole } from '../server/src/db.js'
 import { createCourse, getCourse, setCourseItems } from '../server/src/publish/store.js'
@@ -47,7 +48,7 @@ class FakeSocket extends EventEmitter {
 /** A socket of this staff member in this room, held as the upgrade would hold it. */
 function socketIn(sessionId: string, cookie: string): FakeSocket {
   const ws = new FakeSocket()
-  const payload = { sessionId, participantId: `p_${sessionId}`, role: roleFor(cookie, { sessionId, participantId: `p_${sessionId}` }) }
+  const payload = { sessionId, participantId: `p_${sessionId}`, role: roleFor(staffFromCookieHeader(cookie), { sessionId, participantId: `p_${sessionId}` }) }
   assert.equal(payload.role, 'host', 'the test socket must start as host')
   authorizeSocket(ws as unknown as WebSocket, { cookieHeader: cookie, payload })
   return ws
@@ -181,7 +182,7 @@ test('a teacher removed from the course is bannable, and their old console key o
   // He reconnects with his stored token and never joins again: the row still
   // says host, the room does not.
   assert.equal(getParticipant(room, joined.participant.id)?.role, 'host')
-  assert.equal(roleFor(tim.cookie, { sessionId: room, participantId: joined.participant.id }), 'participant')
+  assert.equal(roleFor(staffFromCookieHeader(tim.cookie), { sessionId: room, participantId: joined.participant.id }), 'participant')
 
   const claimed = await call(app.base, 'POST', `/api/sessions/${room}/handoff/claim`, { body: { key } })
   assert.equal(claimed.status, 401, 'a key minted before the removal handed out a console')

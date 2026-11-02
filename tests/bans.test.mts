@@ -239,7 +239,7 @@ test('a ban in one room does not close the neighbouring one', async () => {
 
   const next = await join({ name: 'Гриша', device: mark('g'), room: OTHER })
   assert.equal(next.status, 200, 'the neighbouring seminar is not the one they were closed out of')
-  assert.equal(banFor(OTHER, grisha.participant.id, `${DEVICE_COOKIE}=${mark('g')}`), null)
+  assert.equal(banFor(OTHER, grisha.participant.id, null, deviceOf(`${DEVICE_COOKIE}=${mark('g')}`)), null)
 })
 
 /* -------------------------------------------------- what the teacher sees */

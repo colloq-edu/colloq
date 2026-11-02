@@ -21,10 +21,10 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
 import { normalizePath } from '@shared/paths'
-import { originAllowed } from './admin/auth.js'
+import { originAllowed, staffFromCookieHeader } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { upgradeToken } from './socket-authorization.js'
-import { banFor, banRefusal, type BanInForce } from './bans.js'
+import { banFor, banRefusal, deviceOf, type BanInForce } from './bans.js'
 import { forwardedHost } from './net/inbound.js'
 import { socketCookieHeader } from './sso/identity.js'
 import { handleCollabSocket } from './collab/index.js'
@@ -166,10 +166,11 @@ function refuse403(socket: Duplex, reply: object): void {
  * takes the rights away within seconds. The decision is made by `roleFor`,
  * the same one as on the HTTP side, so the two entrances have nowhere to
  * diverge. The cookie header is the one the sign-in proxy has had its say on
- * (sso/identity.ts · socketCookieHeader).
+ * (sso/identity.ts · socketCookieHeader): this door's counterpart of
+ * `currentStaff(req)`, which the HTTP side hands `roleFor`.
  */
 function effectiveRole(cookieHeader: string | undefined, payload: TokenPayload): TokenPayload['role'] {
-  return roleFor(cookieHeader, payload)
+  return roleFor(staffFromCookieHeader(cookieHeader), payload)
 }
 
 /** A file room's name back into a path. A malformed string is just not a path. */
@@ -265,7 +266,7 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
      * same as at the entrance (bans.ts · banFor), so the two answers have
      * nowhere to diverge.
      */
-    const ban = banFor(sessionId, payload.participantId, cookieHeader)
+    const ban = banFor(sessionId, payload.participantId, staffFromCookieHeader(cookieHeader), deviceOf(cookieHeader))
     if (ban) return refuseBanned(socket, ban)
 
     wss.handleUpgrade(req, socket, head, (ws) => {
