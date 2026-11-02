@@ -1,7 +1,18 @@
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import type { RequestHandler } from 'express'
+import { PLOTLY_BUNDLE_PATH } from '@shared/plotly'
 import { preferredEncodings } from './http-encoding.js'
+
+/*
+ * The two bundles copied in beside the build rather than built by it, which
+ * web/scripts/precompress.mjs compresses along with assets/. Named one by one:
+ * the rest of pdf/ and plotly/ is not something the build vouches for. Plotly
+ * had its sidecars written from the day it arrived and was still sent through
+ * the per-request compressor: five megabytes compressed again for every
+ * student's first chart, into a bigger file than the one lying next to it.
+ */
+const COPIED_BUNDLES = new Set(['pdf/pdf.worker.min.mjs', PLOTLY_BUNDLE_PATH.replace(/^\/+/, '')])
 
 async function fileInfo(file: string) {
   try {
@@ -21,7 +32,7 @@ export function precompressedStatic(directory: string): RequestHandler {
     let relative: string
     try { relative = decodeURIComponent(req.path).replace(/^\/+/, '') } catch { return next() }
     // Only application assets, never API responses, workspace files or the SPA HTML.
-    if (!(relative.startsWith('assets/') || relative === 'pdf/pdf.worker.min.mjs')) return next()
+    if (!(relative.startsWith('assets/') || COPIED_BUNDLES.has(relative))) return next()
     if (!/\.(?:m?js|css|svg|json)$/.test(relative) || relative.includes('\0')) return next()
     if (relative.split(/[\\/]/).some(part => part === '..' || part === '.')) return next()
     const encodings = preferredEncodings(req.headers['accept-encoding'])
