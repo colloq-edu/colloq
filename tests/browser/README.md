@@ -13,6 +13,12 @@ and council A → B → A from a fresh browser context without IndexedDB state.
 Only connection availability is controlled; server responses are not fabricated.
 Code assertions exclude the remote-cursor name widgets from rendered code lines.
 
+`markdown.spec.ts` covers what other people's notes may do to the page they
+are drawn into: the app's own classes, popovers, ids and `data-*` names. It needs
+the production build because the overlay it guards against is made of the app's
+real utility classes, and only the built stylesheet says what they do. Its rooms
+are seeded in `server.mts` with fixed cell ids.
+
 Playwright's [web server lifecycle](https://playwright.dev/docs/test-webserver)
 and [WebSocket routing](https://playwright.dev/docs/api/class-websocketroute)
 provide the isolated server and controlled connection loss. CI retains traces

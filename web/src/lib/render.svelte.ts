@@ -15,7 +15,7 @@
 
 import { foldAnsiColours, pendingEscape } from './ansi'
 import { safeStyle } from '@shared/note-css'
-import { MARKDOWN_FORBIDDEN_ATTRS, MARKDOWN_FORBIDDEN_TAGS } from './sanitize'
+import { MARKDOWN_FORBIDDEN_ATTRS, MARKDOWN_FORBIDDEN_TAGS, noteClasses, noteReference } from './sanitize'
 
 export { ansi256ToBasic, foldAnsiColours, stripAnsi } from './ansi'
 
@@ -70,6 +70,12 @@ export interface MarkdownOptions {
  */
 const mathSlot = (tex: string, display: boolean): string =>
   `<${display ? 'div' : 'span'} data-math="${encodeURIComponent(tex)}"${display ? ' data-display=""' : ''}></${display ? 'div' : 'span'}>`
+
+/**
+ * The placeholder's attributes: the only `data-*` a note keeps, because the
+ * renderer writes them itself (lib/sanitize.ts · names).
+ */
+const MATH_SLOT_ATTRS = ['data-math', 'data-display']
 
 const blockMath = {
   name: 'blockMath',
@@ -159,6 +165,10 @@ async function importRenderers(): Promise<Renderers> {
           RETURN_DOM_FRAGMENT: true,
           FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS,
           FORBID_ATTR: MARKDOWN_FORBIDDEN_ATTRS,
+          // Names the page itself answers to stay the page's (lib/sanitize.ts · names).
+          ALLOW_DATA_ATTR: false,
+          ADD_ATTR: MATH_SLOT_ATTRS,
+          SANITIZE_NAMED_PROPS: true,
         }),
       )
       /*
@@ -187,6 +197,27 @@ async function importRenderers(): Promise<Renderers> {
         const kept = safeStyle(styled.getAttribute('style') ?? '')
         if (kept) styled.setAttribute('style', kept)
         else styled.removeAttribute('style')
+      }
+      /*
+       * Classes and references, at the same point and for the same reason as
+       * the style: the foreign is cleaned while our own is not there yet.
+       * `.table-scroll` and every KaTeX class are added below, after this
+       * pass, so the allowlist (lib/sanitize.ts · noteClasses) only has to
+       * know the two that arrive through the markup. Without it a note's
+       * `class="fixed inset-0 z-[95] bg-canvas"` laid the app's own utilities
+       * over the whole room.
+       */
+      for (const element of holder.querySelectorAll('*')) {
+        for (const attribute of [...element.attributes]) {
+          if (attribute.name === 'class') {
+            const kept = noteClasses(element.localName, attribute.value)
+            if (kept) element.setAttribute('class', kept)
+            else element.removeAttribute('class')
+            continue
+          }
+          const pointed = noteReference(attribute.name, attribute.value)
+          if (pointed !== null) element.setAttributeNS(attribute.namespaceURI, attribute.name, pointed)
+        }
       }
       /*
        * Formulas are drawn AFTER the sanitizer, and the order is no accident.
@@ -246,8 +277,10 @@ async function importRenderers(): Promise<Renderers> {
         }
       }
       // A note is written by a classmate; a link in it must not be able to
-      // navigate the seminar tab away from the seminar.
-      for (const anchor of holder.querySelectorAll('a[href]')) {
+      // navigate the seminar tab away from the seminar. Every kind of link,
+      // not only `<a href>`: an image map's `<area>` and an SVG's
+      // `<a xlink:href>` pass the sanitizer and navigate just the same.
+      for (const anchor of holder.querySelectorAll('a[*|href], area[href]')) {
         anchor.setAttribute('target', '_blank')
         anchor.setAttribute('rel', 'noopener noreferrer nofollow')
       }
