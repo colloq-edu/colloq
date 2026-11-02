@@ -29,6 +29,8 @@
 #   workspace/         seminar files — what was uploaded and what cells created
 #   data/session-secret  the signing key: without it every issued link and cookie is dead
 #   data/setup-token     the setup token — the way into the panel when the link is lost
+#   data/doc-tail/       what each notebook typed since its last full copy in the
+#                      database: the copy plus its tail is the notebook
 #   kernel/environments/*.txt  package lists, including those created from the panel
 #                      right on the machine: there is nowhere else to get them, and
 #                      the image is rebuilt from them with one command
@@ -225,14 +227,14 @@ if [ -n "$FILES" ]; then
     found != "" { next }
     name == "workspace" || name ~ /^workspace\// { next }
     name == "data" || name == "kernel" || name == "environments" || name == "kernel/environments" { next }
-    name ~ /^data\/(competitions|contests|dependencies|blobs|page-files)(\/|$)/ || name == "data/session-secret" || name == "data/setup-token" { next }
+    name ~ /^data\/(competitions|contests|dependencies|blobs|page-files|doc-tail)(\/|$)/ || name == "data/session-secret" || name == "data/setup-token" { next }
     name ~ /^(kernel\/)?environments\/[^\/]+\.txt$/ { next }
     { found = "an unexpected name: " $0 }
     END { print found }
   ')" || die "$FILES_NAME cannot be read as a tar.gz archive — the backup is broken or incomplete."
   [ -z "$problem" ] || die "refusing $FILES_NAME: it holds $problem.
   A class backup holds only workspace/, data/competitions, data/contests, data/dependencies,
-  data/blobs, data/page-files, the two keys and environment lists."
+  data/blobs, data/page-files, data/doc-tail, the two keys and environment lists."
 fi
 
 say "${BOLD}1/3${OFF} checking there is somewhere to restore into"
@@ -326,6 +328,18 @@ if [ -n "$DB" ]; then
     done
     say "${DIM}    the previous database is set aside as data/colloq.db.replaced-$STAMP${OFF}"
   fi
+  # And the notebooks' tails go with the database they continue. Left in
+  # place, they were applied to the restored copy on the next open: the
+  # backup came back as "the backup plus what was typed after it", and a
+  # deletion in a tail erased exactly the text the restore was for. The
+  # server would now refuse a tail of another snapshot by itself, but a room
+  # whose snapshot did not change since the backup would still pick up
+  # today's tail — so they leave here, whole, next to the database they
+  # belong to; the archive below brings the backup's own.
+  if [ -d data/doc-tail ]; then
+    mv data/doc-tail "data/doc-tail.replaced-$STAMP"
+    say "${DIM}    and the notebooks' tails, as data/doc-tail.replaced-$STAMP${OFF}"
+  fi
   cp "$DB" data/colloq.db
   chmod 600 data/colloq.db
   say "    $DB_NAME → data/colloq.db"
@@ -341,7 +355,15 @@ if [ -n "$FILES" ]; then
   #
   # -p is required: data/session-secret has mode 0600, and without preserving
   # the mode the signing key would become readable by everyone on the machine.
-  tar -xzpf "$FILES"
+  #
+  # The tails come only with their database. An archive restored over today's
+  # database would put yesterday's tails over today's: the server refuses
+  # them as tails of another snapshot, but today's would already be gone.
+  if [ -n "$DB" ]; then
+    tar -xzpf "$FILES"
+  else
+    tar -xzpf "$FILES" --exclude=data/doc-tail --exclude='data/doc-tail/*'
+  fi
   # Where the environment lists landed depends on whether the roots diverged:
   # in the repository that is kernel/environments, for an installed package a
   # directory of its own next to .env. That is exactly how

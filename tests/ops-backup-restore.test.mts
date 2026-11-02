@@ -540,3 +540,57 @@ test('asked to encrypt without age, the backup refuses before writing anything',
   assert.match(b.out, /age is not installed/)
   assert.equal(fs.existsSync(path.join(m.dir, 'backups')) ? fs.readdirSync(path.join(m.dir, 'backups')).length : 0, 0)
 })
+
+/* ------------------------------------------------ the notebooks' tails */
+
+/** A tail file of room s-one, as the server leaves it between full copies. */
+function seedTail(dir: string, room: string, text: string): void {
+  fs.mkdirSync(path.join(dir, 'data/doc-tail'), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(dir, `data/doc-tail/${room}.bin`), text, { mode: 0o600 })
+}
+
+test('the notebooks’ tails travel with their database: packed, set aside with the one replaced, unpacked from the backup', () => {
+  const m = machine()
+  seedDb(m.dir, 'вчерашняя копия')
+  seedFiles(m.dir)
+  seedTail(m.dir, 's-one', 'вчерашний хвост')
+  m.make('backup')
+  const pair = backupPair(m.dir)
+  const listed = execFileSync('tar', ['-tzf', path.join(m.dir, pair.files)], { encoding: 'utf8' })
+  assert.match(listed, /data\/doc-tail\/s-one\.bin/, 'the backup is short of what the rooms typed since their last full copy')
+
+  // A class took place since: a newer database, newer tails, a new room.
+  execFileSync('sqlite3', [path.join(m.dir, 'data/colloq.db'), "update seminars set name='сегодняшняя пара'"])
+  seedTail(m.dir, 's-one', 'сегодняшний хвост')
+  seedTail(m.dir, 's-two', 'хвост новой комнаты')
+
+  const r = m.restore([pair.db, pair.files], { REPLACE: '1' })
+  assert.equal(r.status, 0, r.out)
+  assert.equal(markOf(path.join(m.dir, 'data/colloq.db')), 'вчерашняя копия')
+  // The restored database gets the tails that continue it, and only those.
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data/doc-tail/s-one.bin'), 'utf8'), 'вчерашний хвост')
+  assert.ok(!fs.existsSync(path.join(m.dir, 'data/doc-tail/s-two.bin')), "today's tail was left to be applied to yesterday's notebook")
+  // Today's are not thrown away: they leave whole, next to the database they continue.
+  const aside = fs.readdirSync(path.join(m.dir, 'data')).filter((n) => n.startsWith('doc-tail.replaced-'))
+  assert.equal(aside.length, 1, fs.readdirSync(path.join(m.dir, 'data')).join(', '))
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data', aside[0], 's-one.bin'), 'utf8'), 'сегодняшний хвост')
+  assert.equal(fs.readFileSync(path.join(m.dir, 'data', aside[0], 's-two.bin'), 'utf8'), 'хвост новой комнаты')
+})
+
+test('an archive restored without its database leaves today’s tails alone', () => {
+  const m = machine()
+  seedDb(m.dir, 'пара')
+  seedFiles(m.dir)
+  seedTail(m.dir, 's-one', 'вчерашний хвост')
+  m.make('backup')
+  const pair = backupPair(m.dir)
+  seedTail(m.dir, 's-one', 'сегодняшний хвост')
+
+  const r = m.restore([pair.files])
+  assert.equal(r.status, 0, r.out)
+  assert.equal(
+    fs.readFileSync(path.join(m.dir, 'data/doc-tail/s-one.bin'), 'utf8'),
+    'сегодняшний хвост',
+    "yesterday's tail replaced today's under today's database",
+  )
+})

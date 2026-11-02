@@ -34,3 +34,11 @@ test('restore.sh accepts data/page-files from an archive', () => {
   assert.ok(pattern[1].split('|').includes('page-files'), allowed)
   assert.ok(pattern[1].split('|').includes('blobs'), allowed)
 })
+
+test('the notebooks’ tails are packed and let back in: snapshot plus tail is the notebook', () => {
+  const list = read('scripts/backup-local.sh').split('\n').find((line) => /^for p in workspace /.test(line))
+  assert.match(list ?? '', /\bdata\/doc-tail\b/)
+  const allowed = read('scripts/restore.sh').split('\n').find((line) => line.includes('name ~ /^data\\/('))
+  const pattern = /\^data\\\/\(([^)]*)\)/.exec(allowed ?? '')
+  assert.ok(pattern?.[1].split('|').includes('doc-tail'), allowed)
+})
