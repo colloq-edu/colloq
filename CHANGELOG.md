@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.30.2](https://github.com/colloq-edu/colloq/compare/v0.30.1...v0.30.2) (2026-11-02)
+
+
+### Bug Fixes
+
+* the findings of the 3 Nov audit — durable room release, tails in backups, SSO room roles, one-process judge, isolated notes and outputs ([#70](https://github.com/colloq-edu/colloq/issues/70)) ([00106b6](https://github.com/colloq-edu/colloq/commit/00106b6f39ba8eba78ce87df7a7eec562fecc713))
+
 ## [0.30.1](https://github.com/colloq-edu/colloq/compare/v0.30.0...v0.30.1) (2026-10-30)
 
 
