@@ -6,6 +6,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { DATA_SCHEMA_VERSION } from '../server/src/data-schema.js'
 
 const enabled = process.env.COLLOQ_RESTORE_DOCKER_TEST === '1'
 const repo = fileURLToPath(new URL('..',import.meta.url))
@@ -37,7 +38,8 @@ test('Docker: prepared hashed packages and pinned offline notebook scoring survi
   await run(process.execPath,['--import','tsx',fixture,'seed',source])
   const before = JSON.parse(fs.readFileSync(path.join(source,'run-summary.json'),'utf8'))
   const release = path.join(TEST_ROOT,'restore-release.json')
-  fs.writeFileSync(release,JSON.stringify({schemaVersion:1,version:'smoke',dataSchemaVersion:1,compatibleDataSchemaVersions:[1],
+  fs.writeFileSync(release,JSON.stringify({schemaVersion:1,version:'smoke',dataSchemaVersion:DATA_SCHEMA_VERSION,
+    compatibleDataSchemaVersions:Array.from({length:DATA_SCHEMA_VERSION},(_,index)=>index+1),
     catalog:{schemaVersion:1,release:'smoke',environments:[{name:'kaggle-base',image:before.imageDigest,gpu:false}]}}))
   const archive = path.join(TEST_ROOT,'prepared-offline-run.tar.gz')
   const backup = path.join(repo,'scripts/runtime-backup.py')
