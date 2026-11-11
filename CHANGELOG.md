@@ -13,6 +13,13 @@ tags the release. Do not edit it by hand in feature pull requests; see
 [RELEASING.md](RELEASING.md) for the release flow. The 0.1.0 section below was
 written by hand before that.
 
+## [0.31.0](https://github.com/colloq-edu/colloq/compare/v0.30.2...v0.31.0) (2026-11-11)
+
+
+### Features
+
+* export leaderboards and harden classroom runtime ([#73](https://github.com/colloq-edu/colloq/issues/73)) ([af78f00](https://github.com/colloq-edu/colloq/commit/af78f00caa57ae9a0c9010d52e7ee414238bbfd3))
+
 ## [0.30.2](https://github.com/colloq-edu/colloq/compare/v0.30.1...v0.30.2) (2026-11-02)
 
 
