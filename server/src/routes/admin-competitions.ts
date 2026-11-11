@@ -31,6 +31,7 @@ import path from 'node:path'
 import busboy from 'busboy'
 import { Router, type Request, type Response } from 'express'
 import { tr } from '@shared/i18n'
+import { competitionLeaderboardCsv } from '../competitions/leaderboard-csv.js'
 import { acceptPinnedSubmission, executionRevision, publicExecution } from '../dependencies/service.js'
 import { assertCompetitionCapability, competitionCapabilities, notebookNeeds, type CompetitionNeeds } from '../competitions/capabilities.js'
 import { submissionUsesCurrentBase } from '../competitions/provenance.js'
@@ -175,6 +176,7 @@ import type {
   BaselineView,
   CompetitionCounts,
   CompetitionLive,
+  CompetitionLeaderboard,
   CompetitionRow,
   CompetitionView,
   CompetitionsList,
@@ -448,6 +450,16 @@ function baselineView(competition: Competition): BaselineView | null {
     participantError: submission?.participantError ?? null,
     teacherError: submission?.teacherError ?? null,
   }
+}
+
+/** Shared by the live JSON table and its CSV download, without feed pagination. */
+function leaderboardView(competition: Competition): CompetitionLeaderboard {
+  const baseline = baselineEntrantOf(competition)
+  const names = new Map(listCompetitionEntrants(competition.id).map((entrant) => [entrant.id, entrant.name]))
+  const board = (part: 'public' | 'private') =>
+    placesByScore(leaderboard(competition.id, part).filter((row) => row.entrantId !== baseline))
+      .map((row) => ({ ...row, entrantName: names.get(row.entrantId) ?? getEntrant(row.entrantId)?.name ?? '' }))
+  return { revision: competition.revision ?? 0, public: board('public'), private: board('private'), baseline: baselineView(competition) }
 }
 
 async function viewOf(competition: Competition): Promise<CompetitionView> {
@@ -1955,12 +1967,16 @@ export function adminCompetitionRoutes(): Router {
   router.get('/api/admin/competitions/:id/leaderboard', requireStaff, (req, res) => {
     const competition = competitionOf(req, res)
     if (!competition) return
-    const baseline = baselineEntrantOf(competition)
-    const names = new Map(listCompetitionEntrants(competition.id).map((entrant) => [entrant.id, entrant.name]))
-    const board = (part: 'public' | 'private') =>
-      placesByScore(leaderboard(competition.id, part).filter((row) => row.entrantId !== baseline))
-        .map((row) => ({ ...row, entrantName: names.get(row.entrantId) ?? getEntrant(row.entrantId)?.name ?? '' }))
-    res.json({ revision: competition.revision ?? 0, public: board('public'), private: board('private'), baseline: baselineView(competition) })
+    res.json(leaderboardView(competition))
+  })
+
+  router.get('/api/admin/competitions/:id/leaderboard.csv', requireStaff, (req, res) => {
+    const competition = competitionOf(req, res)
+    if (!competition) return
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Cache-Control', STAFF_FILE_CACHE)
+    res.attachment(`${competition.slug}-leaderboard.csv`)
+    res.send(competitionLeaderboardCsv(leaderboardView(competition)))
   })
 
   router.get('/api/admin/competitions/:id/submissions', requireStaff, (req, res) => {

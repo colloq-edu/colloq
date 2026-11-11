@@ -93,4 +93,14 @@ createTeacher({email:'owner@test.local',name:'Browser owner',role:'owner'})
 createSession(NOTES_ROOM,'Browser notes fixture',null)
 makeFile(NOTES_ROOM,NOTES_FILE,slides(SERVER_NOTES.length))
 SERVER_NOTES.forEach((text,index)=>setNote(NOTES_ROOM,NOTES_FILE,index+1,text))
+// A complete board with different public/private ranks and a pending private score.
+const {createCompetition,createEntrant,acceptSubmission,updateSubmission,setCompetitionState,leaveQueue}=await import('../../server/src/competitions/store.js')
+const exportCompetition=createCompetition({slug:'browser-leaderboard-export',title:'Leaderboard export',metric:{direction:'higher'},privateRelease:'manual'})!
+setCompetitionState(exportCompetition.id,'live')
+for(const [name,publicScore,privateScore] of [['Anna Browser',0.1234567890123456,-0.5],['Boris Browser',0.1,0.5],['Pending Browser',0,null]] as const){
+ const entrant=createEntrant(name).entrant
+ const submission=acceptSubmission({competitionId:exportCompetition.id,entrantId:entrant.id,fileName:'answer.ipynb',bytes:2})
+ updateSubmission(submission.id,{state:'scored',publicScore,privateScore})
+ leaveQueue(submission.id)
+}
 await import('../../server/src/index.js')

@@ -131,6 +131,7 @@ test('every per-competition door answers 404 for a competition the caller does n
     ['PUT', `/api/admin/competitions/${annaOwn.id}/metric`, { code: 'def score(a, b): return 0' }],
     ['GET', `/api/admin/competitions/${annaOwn.id}/live`],
     ['GET', `/api/admin/competitions/${annaOwn.id}/leaderboard`],
+    ['GET', `/api/admin/competitions/${annaOwn.id}/leaderboard.csv`],
     ['GET', `/api/admin/competitions/${annaOwn.id}/submissions`],
     ['GET', `/api/admin/competitions/${annaOwn.id}/entrants`],
     ['POST', `/api/admin/competitions/${annaOwn.id}/entrants`, { name: '@intruder' }],
@@ -150,6 +151,7 @@ test('every per-competition door answers 404 for a competition the caller does n
 
   // A course teacher who did not create it runs it; a stranger to both does not.
   assert.equal((await call(app.base, 'GET', `/api/admin/competitions/${annaCourse.id}`, { cookie: vera.cookie })).status, 200)
+  assert.equal((await call(app.base, 'GET', `/api/admin/competitions/${annaCourse.id}/leaderboard.csv`, { cookie: vera.cookie })).status, 200)
   assert.equal((await call(app.base, 'GET', `/api/admin/competitions/${annaOwn.id}`, { cookie: vera.cookie })).status, 404)
   // A competition with no creator and no course is the owners'.
   assert.equal((await call(app.base, 'GET', `/api/admin/competitions/${orphan.id}`, { cookie: anna.cookie })).status, 404)

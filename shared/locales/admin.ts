@@ -3938,6 +3938,30 @@ export const adminMessages: MessageCatalog = {
     "ru": "Лидерборда пока нет",
     "en": "No leaderboard yet"
   },
+  "admin.competitions.downloadBoard": {
+    "ru": "Скачать CSV",
+    "en": "Download CSV"
+  },
+  "admin.competitions.csv.publicPlace": {
+    "ru": "Место public",
+    "en": "Public place"
+  },
+  "admin.competitions.csv.entrant": {
+    "ru": "Участник",
+    "en": "Participant"
+  },
+  "admin.competitions.csv.publicScore": {
+    "ru": "Результат public",
+    "en": "Public score"
+  },
+  "admin.competitions.csv.privatePlace": {
+    "ru": "Место private",
+    "en": "Private place"
+  },
+  "admin.competitions.csv.privateScore": {
+    "ru": "Результат private",
+    "en": "Private score"
+  },
   "admin.competitions.noBoardHint": {
     "ru": "В него встают посылки, дошедшие до числа. Пока таких нет.",
     "en": "It fills with submissions that reached a score. There are none yet."
