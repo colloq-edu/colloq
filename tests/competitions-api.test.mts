@@ -1084,6 +1084,49 @@ test('admin leaderboard uses all submissions beyond the feed page', async () => 
   assert.equal(board.private[0].score, 998)
   assert.equal(board.public[0].entrantName, 'Winner')
   assert.equal(typeof board.revision, 'number')
+  const csv = await call('GET', `/api/admin/competitions/${c.id}/leaderboard.csv`, { cookie: teacher })
+  assert.equal(csv.status, 200)
+  assert.match(await csv.text(), /"1","Winner","999","1","998"/)
+})
+
+test('leaderboard CSV is a staff download with full scores, both ranks and no baseline or late results', async () => {
+  const c = createCompetition({ slug: 'csv-board', title: 'CSV', metric: { direction: 'higher' }, privateRelease: 'manual' })!
+  let at = 1
+  const scored = (name: string, publicScore: number, privateScore: number | null, late = false) => {
+    const entrant = createEntrant(name).entrant
+    const s = acceptSubmission({ competitionId: c.id, entrantId: entrant.id, fileName: 'x.ipynb', bytes: 2, at: at++, late })
+    updateSubmission(s.id, { state: 'scored', publicScore, privateScore })
+    return { entrant, submission: s }
+  }
+  const anna = scored('Anna CSV', 0.1234567890123456, -0.5)
+  db.prepare('UPDATE entrants SET name = ? WHERE id = ?').run('Анна, "CSV"\nгруппа 1', anna.entrant.id)
+  const formula = scored('Legacy CSV', 0.1, 0.5)
+  db.prepare('UPDATE entrants SET name = ? WHERE id = ?').run('=1+1', formula.entrant.id)
+  scored('Pending CSV', 0, null)
+  scored('Late CSV', 9, 9, true)
+  updateCompetition(c.id, { baselineSubmissionId: scored('Baseline CSV', 10, 10).submission.id })
+  const route = `/api/admin/competitions/${c.id}/leaderboard.csv`
+  assert.equal((await call('GET', route)).status, 401)
+  const res = await call('GET', route, { cookie: teacher })
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-type') ?? '', /^text\/csv; charset=utf-8/)
+  assert.match(res.headers.get('content-disposition') ?? '', /attachment; filename="csv-board-leaderboard.csv"/)
+  assert.equal(res.headers.get('cache-control'), 'private, no-store')
+  const raw = Buffer.from(await res.arrayBuffer())
+  assert.deepEqual([...raw.subarray(0, 3)], [0xef, 0xbb, 0xbf])
+  const csv = raw.toString('utf8')
+  assert.ok(csv.includes('"1","Анна, ""CSV""\nгруппа 1","0.1234567890123456","2","-0.5"\r\n'))
+  assert.ok(csv.includes('"2","\'=1+1","0.1","1","0.5"\r\n'))
+  assert.ok(csv.includes('"3","Pending CSV","0","",""\r\n'))
+  assert.doesNotMatch(csv, /Baseline CSV|Late CSV/)
+  assert.equal(getCompetition(c.id)?.privateOpenedAt, null)
+})
+
+test('an empty leaderboard CSV still downloads its column headings', async () => {
+  const c = createCompetition({ slug: 'empty-csv-board', title: 'Empty CSV' })!
+  const res = await call('GET', `/api/admin/competitions/${c.id}/leaderboard.csv`, { cookie: teacher })
+  assert.equal(res.status, 200)
+  assert.equal((await res.text()).split('\r\n').length, 2)
 })
 
 test("the teacher reads the class's places: a tie is numbered by time, the same on the board and in the entrants tab", async () => {

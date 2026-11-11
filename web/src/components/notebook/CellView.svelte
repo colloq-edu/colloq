@@ -43,6 +43,7 @@
 </script>
 
 <script lang="ts">
+  import Lazy from '@/components/ui/Lazy.svelte'
   import { onMount, tick, untrack } from 'svelte'
   import { slide } from 'svelte/transition'
   import { quintOut } from 'svelte/easing'
@@ -88,7 +89,7 @@
   import { attemptFiles, attemptFootnote } from '@/lib/council-footnote'
   import { takeAttemptFile } from '@/lib/council-files'
   import { clock } from '@/lib/history'
-  import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
+  const loadCouncilOnScreen = () => import('@/components/council/CouncilOnScreen.svelte')
   import {
     beatsAlive,
     focusPult,
@@ -135,11 +136,11 @@
     type Held,
   } from '@/lib/output-seat'
   import { emptyCellIsRemovable } from './cell-keys'
-  import CellOutputs from './CellOutputs.svelte'
+  const loadCellOutputs = () => import('./CellOutputs.svelte')
   import KernelMemoryNotice from './KernelMemoryNotice.svelte'
   import { isKernelMemoryOutput } from '@shared/kernel-problem'
   import CodeEditor from './CodeEditor.svelte'
-  import Markdown from './Markdown.svelte'
+  const loadMarkdown = () => import('./Markdown.svelte')
 
   interface Props {
     id: string
@@ -3090,7 +3091,11 @@
                 >
                   {#if attemptRun.outputs.length > 0}
                     <div class="px-2 py-1.5">
-                      <CellOutputs outputs={attemptRun.outputs} />
+                      <Lazy load={loadCellOutputs}>
+                        {#snippet children(CellOutputs)}
+                          <CellOutputs outputs={attemptRun.outputs} />
+                        {/snippet}
+                      </Lazy>
                     </div>
                   {/if}
                   <!--
@@ -3225,7 +3230,11 @@
                 <div
                   transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}
                 >
+                  <Lazy load={loadCouncilOnScreen}>
+                    {#snippet children(CouncilOnScreen)}
                   <CouncilOnScreen shown={onScreen} lineNumbers={numbered} />
+                    {/snippet}
+                  </Lazy>
                 </div>
               {/if}
               <!--
@@ -3658,7 +3667,11 @@
             >
               {@render openMark()}
               {#if liveText.current.trim()}
-                <Markdown source={liveText.current} class="text-prose text-muted" />
+                <Lazy load={loadMarkdown}>
+                  {#snippet children(Markdown)}
+                    <Markdown source={liveText.current} class="text-prose text-muted" />
+                  {/snippet}
+                </Lazy>
               {:else}
                 <!-- The invitation is only for someone who will be let in: a
                      double click on a locked note answers with a refusal, and
@@ -3741,6 +3754,8 @@
           -->
           {#if leads && showsOnScreen && onScreen}
             <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
+              <Lazy load={loadCouncilOnScreen}>
+                {#snippet children(CouncilOnScreen)}
               <CouncilOnScreen
                 shown={onScreen}
                 lineNumbers={numbered}
@@ -3752,6 +3767,8 @@
                 onadopt={(participantId, run) => session.council.adopt(id, participantId, run)}
                 onundo={() => session.council.undoAdopt(id)}
               />
+                {/snippet}
+              </Lazy>
             </div>
           {/if}
 
@@ -4001,7 +4018,11 @@
               <div bind:clientHeight={outputsMeasured}>
                 {#if printed.length > 0}
                   <div class="px-2 py-1.5">
-                    <CellOutputs outputs={printed} bind:pending={outputsPending} />
+                    <Lazy load={loadCellOutputs}>
+                      {#snippet children(CellOutputs)}
+                        <CellOutputs outputs={printed} bind:pending={outputsPending} />
+                      {/snippet}
+                    </Lazy>
                   </div>
                   <!--
                     The line under the output, only where it has something to SAY.

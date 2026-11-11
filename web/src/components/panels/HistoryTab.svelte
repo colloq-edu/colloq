@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
+  import { onDestroy } from 'svelte'
   import ActivityHistory from './ActivityHistory.svelte'
   /**
    * What the room did to its notebook, and how to put any of it back.
@@ -75,12 +76,22 @@
 
   /** Versions already fetched. A second visit to a row is free. */
   const seen = new Map<number, VersionDetail>()
+  // Request identity, not the selected sequence: A → B → A can leave two
+  // different requests for A in flight. Neither may settle the other's UI.
+  let listRequest = 0
+  let detailRequest = 0
+  onDestroy(() => {
+    listRequest += 1
+    detailRequest += 1
+  })
 
   async function load(): Promise<void> {
+    const request = ++listRequest
     loading = true
     errorRender = () => (null)
     try {
       const body = await listVersions(session.session.id, session.token)
+      if (request !== listRequest) return
       versions = body.versions
       trimmed = body.trimmed
       /*
@@ -91,13 +102,15 @@
        */
       if (openSeq === null && versions.length > 0) void open(versions[0].seq)
     } catch (cause) {
+      if (request !== listRequest) return
       errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.652'))
     } finally {
-      loading = false
+      if (request === listRequest) loading = false
     }
   }
 
   async function open(seq: number): Promise<void> {
+    const request = ++detailRequest
     openSeq = seq
     /*
      * The error belongs to the attempt, not to the panel.
@@ -116,10 +129,12 @@
     detail = null
     try {
       const body = await readVersion(session.session.id, seq, session.token)
+      if (request !== detailRequest) return
       seen.set(seq, body)
       // The reader may have clicked on down the list while this was in flight.
-      if (openSeq === seq) detail = body
+      detail = body
     } catch (cause) {
+      if (request !== detailRequest) return
       errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.653'))
     }
   }
@@ -131,6 +146,7 @@
       await restoreVersion(session.session.id, openSeq, session.token, cellId)
       // The restore is itself a version, so the list is now one longer.
       seen.clear()
+      detailRequest += 1
       openSeq = null
       await load()
     } catch (cause) {
@@ -203,6 +219,10 @@
     }
     session.doc.on('update', onChange)
     return () => {
+      listRequest += 1
+      // A host can visit Activity and return to this same selected version.
+      // Its detail is still current; invalidating it here strands the view
+      // with openSeq set and detail=null. Destruction invalidates it above.
       if (soon) clearTimeout(soon)
       if (settled) clearTimeout(settled)
       session.doc.off('update', onChange)

@@ -192,7 +192,7 @@ const gaps = new Set<string>()
 /**
  * Start recording a room, measuring from the state it currently holds.
  *
- * Called once the document is hydrated and before it is seeded, so a brand-new
+ * Called once the document is hydrated and seeded, so a brand-new
  * seminar records its starter cells as its first version and a restarted one
  * does not record its whole notebook as somebody's edit.
  */
@@ -222,22 +222,30 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
    * them to, and would rebuild to an empty notebook for ever; giving it a base
    * now costs one row and makes everything from this moment on readable.
    */
-  if (hasHistoryBase(sessionId)) {
-    repairHistory(sessionId, doc)
-    return
+  try {
+    if (hasHistoryBase(sessionId)) {
+      repairHistory(sessionId, doc)
+      return
+    }
+    appendVersion({
+      sessionId,
+      update: Y.encodeStateAsUpdate(doc),
+      kind: 'opened',
+      authorId: null,
+      createdAt: Date.now(),
+      label: null,
+      summary: versionCount(sessionId) > 0 ? tr("server.notebookAtThisPoint.ccc077") : tr("server.opened.e716b0"),
+      added: 0,
+      removed: 0,
+      cells: [],
+    })
+  } catch (err) {
+    // History is optional during a storage outage; room subscriptions are not.
+    // Keep the live baseline, and require a full keyframe once writes recover:
+    // later deltas alone cannot reconstruct the base that failed here.
+    gaps.add(sessionId)
+    console.error(`[history] could not initialize history for ${sessionId}`, err)
   }
-  appendVersion({
-    sessionId,
-    update: Y.encodeStateAsUpdate(doc),
-    kind: 'opened',
-    authorId: null,
-    createdAt: Date.now(),
-    label: null,
-    summary: versionCount(sessionId) > 0 ? tr("server.notebookAtThisPoint.ccc077") : tr("server.opened.e716b0"),
-    added: 0,
-    removed: 0,
-    cells: [],
-  })
 }
 
 /** "Everything recorded": the `updatesUpTo` address is a ceiling, not an exact row. */
@@ -602,7 +610,9 @@ function close(key: string): void {
   try {
     const versionSeq = appendVersion({
       sessionId: burst.sessionId,
-      update: merged,
+      // The first visible version after a storage gap must stand on its own.
+      // A keyframe written after this row cannot repair replay AT this row.
+      update: gaps.has(burst.sessionId) ? Y.encodeStateAsUpdate(after) : merged,
       kind: quiet ? 'quiet' : 'edit',
       // One author — their name; two or more — "the room", which is the truth.
       // An empty set means only the server wrote, and that is the room too.

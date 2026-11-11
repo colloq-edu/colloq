@@ -1,6 +1,14 @@
 import type { MessageCatalog } from '../i18n-types.js'
 
 export const serverMessages: MessageCatalog = {
+  "server.kernel.startupExited": {
+    "ru": "Jupyter завершился при запуске (код выхода: {code}).{detail}",
+    "en": "Jupyter exited during startup (exit code: {code}).{detail}"
+  },
+  "server.kernel.startupOOM": {
+    "ru": "Jupyter остановлен при запуске: контейнеру не хватило памяти.{detail}",
+    "en": "Jupyter stopped during startup: the container ran out of memory.{detail}"
+  },
   "server.requestBlockedThisPageUsesADifferent.dd9b4b": {
     "ru": "Запрос отклонён: эта страница использует другой адрес сервера. Откройте Colloq напрямую и повторите попытку.",
     "en": "Request blocked: this page uses a different server address. Open Colloq directly and try again."

@@ -87,6 +87,8 @@ function sleep(ms: number): Promise<void> {
 export class FakeContestJudge implements ContestJudge {
   readonly backend = 'test' as const
 
+  async resolveImage(image: string): Promise<string> { return image }
+
   async judge(request: JudgeRequest): Promise<JudgeOutcome> {
     const started = Date.now()
     const directives = parseDirectives(request.source)

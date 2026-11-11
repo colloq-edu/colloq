@@ -726,6 +726,9 @@ export const adminApi = {
   competitionLeaderboard: (id: string) =>
     request<CompetitionLeaderboard>(`/competitions/${encodeURIComponent(id)}/leaderboard`),
 
+  competitionLeaderboardCsvUrl: (id: string) =>
+    `${BASE}/competitions/${encodeURIComponent(id)}/leaderboard.csv`,
+
   competitionLive: (id: string) =>
     request<CompetitionLive>(`/competitions/${encodeURIComponent(id)}/live`),
 

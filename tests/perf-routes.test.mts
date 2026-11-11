@@ -121,7 +121,7 @@ test('a seminar link is costed by the room alone, once per language', () => {
     const expected = [
       ...FORM,
       '/assets/SessionScreen-t.js', '/assets/SessionScreen-t.css', '/assets/plural-t.js', '/assets/plural-t.css',
-      '/assets/yjs-t.js', '/assets/codemirror-t.js', '/assets/render-t.js', `/assets/room-${locale}-t.js`,
+      '/assets/yjs-t.js', '/assets/codemirror-t.js', `/assets/room-${locale}-t.js`,
     ].sort()
     assert.deepEqual(room.files, expected)
     assert.equal(room.files.filter((file: string) => OTHER_ROUTES.test(file)).length, 0,
@@ -160,7 +160,7 @@ test('each chunk says on which routes and in which language it goes out at once'
   assert.deepEqual(load.get('/assets/AdminScreen-t.js'), { load: 'route', routes: ['admin'] })
   assert.deepEqual(load.get('/assets/admin-ru-t.js'), { load: 'route', routes: ['admin ru'] })
   assert.deepEqual(load.get('/assets/plural-t.js'), { load: 'route', routes: ['room', 'admin'] })
-  assert.deepEqual(load.get('/assets/render-t.js'), { load: 'route', routes: ['room', 'reader'] })
+  assert.deepEqual(load.get('/assets/render-t.js'), { load: 'route', routes: ['reader'] })
   assert.deepEqual(load.get('/assets/pdf-t.js'), { load: 'lazy', routes: [] })
   assert.deepEqual(report.bundle.strays, [])
 })
@@ -177,5 +177,24 @@ test('a build without the manifest fails out loud instead of guessing the routes
     assert.deepEqual(report.bundle.scenarios.map((s: any) => s.route), ['form'])
   } finally {
     fs.writeFileSync(manifest, kept)
+  }
+})
+
+test('splitting a Plotly file cannot hide the full cold chart transfer', () => {
+  const directory = path.join(dist, 'plotly')
+  fs.mkdirSync(path.join(directory, 'chunks'), { recursive: true })
+  try {
+    // Each file fits 450KiB, but an ordinary chart imports both and pays
+    // over 450KiB. Random payloads avoid a repetitive fixture compressing away.
+    const payload = () => `export const data = "${randomBytes(280_000).toString('base64')}";`
+    fs.writeFileSync(path.join(directory, 'plotly.min.js'), 'import "./chunks/large.js";' + payload())
+    fs.writeFileSync(path.join(directory, 'chunks/large.js'), payload())
+    const { status, report } = perf()
+    assert.equal(status, 1)
+    assert.equal(report.budgets.find((b: any) => b.name === 'largest file outside the graph')?.ok, true)
+    assert.equal(report.budgets.find((b: any) => b.name === 'cold Plotly graph gzip')?.ok, false)
+    assert.deepEqual(report.bundle.plotly.files, ['/plotly/chunks/large.js', '/plotly/plotly.min.js'])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
   }
 })

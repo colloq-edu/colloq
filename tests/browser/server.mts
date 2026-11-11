@@ -35,6 +35,18 @@ for(const [roomId,council] of [['browser-shared',false],['browser-council',true]
 type Fixture={type:'code'|'markdown',source:string,outputs?:Record<string,string>[]}
 const HOST_TAKEOVER='position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;background:black!important'
 const markup:Record<string,Fixture[]>={
+ 'browser-plotly':[
+  {type:'code',source:'scatter figure',outputs:[{'application/vnd.plotly.v1+json':JSON.stringify({data:[{type:'scatter',x:[1,2,3],y:[2,1,4],mode:'markers'}],layout:{height:320}})}]},
+ ],
+ 'browser-plotly-3d':[
+  {type:'code',source:'three dimensional figure',outputs:[{'application/vnd.plotly.v1+json':JSON.stringify({data:[{type:'scatter3d',x:[1,2,3],y:[2,1,4],z:[1,3,2],mode:'markers'}],layout:{height:320}})}]},
+ ],
+ 'browser-plotly-switch':[
+  {type:'code',source:'figure with a trace selector',outputs:[{'application/vnd.plotly.v1+json':JSON.stringify({
+   data:[{type:'scatter',x:[1,2,3],y:[2,1,4],mode:'markers'}],
+   layout:{height:320,updatemenus:[{type:'buttons',active:-1,buttons:[{label:'Bar',method:'restyle',args:['type','bar']}]}]},
+  })}]},
+ ],
  'browser-note-names':[
   {type:'markdown',source:'<div class="fixed inset-0 z-[95] bg-canvas">Blocked</div>'},
   {type:'markdown',source:'<button popovertarget="cover">Show the answer</button><div popover="manual" id="cover" style="width:100%;height:100%;background:#000">covered</div>\n\n<button commandfor="modal" command="show-modal">Open</button><dialog id="modal" open>dialog text</dialog>'},
@@ -93,4 +105,14 @@ createTeacher({email:'owner@test.local',name:'Browser owner',role:'owner'})
 createSession(NOTES_ROOM,'Browser notes fixture',null)
 makeFile(NOTES_ROOM,NOTES_FILE,slides(SERVER_NOTES.length))
 SERVER_NOTES.forEach((text,index)=>setNote(NOTES_ROOM,NOTES_FILE,index+1,text))
+// A complete board with different public/private ranks and a pending private score.
+const {createCompetition,createEntrant,acceptSubmission,updateSubmission,setCompetitionState,leaveQueue}=await import('../../server/src/competitions/store.js')
+const exportCompetition=createCompetition({slug:'browser-leaderboard-export',title:'Leaderboard export',metric:{direction:'higher'},privateRelease:'manual'})!
+setCompetitionState(exportCompetition.id,'live')
+for(const [name,publicScore,privateScore] of [['Anna Browser',0.1234567890123456,-0.5],['Boris Browser',0.1,0.5],['Pending Browser',0,null]] as const){
+ const entrant=createEntrant(name).entrant
+ const submission=acceptSubmission({competitionId:exportCompetition.id,entrantId:entrant.id,fileName:'answer.ipynb',bytes:2})
+ updateSubmission(submission.id,{state:'scored',publicScore,privateScore})
+ leaveQueue(submission.id)
+}
 await import('../../server/src/index.js')

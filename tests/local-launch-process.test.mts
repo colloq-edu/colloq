@@ -29,7 +29,7 @@ function fixture(p: number): string {
   fs.mkdirSync(path.join(root, 'cli/src'), { recursive: true })
   for (const file of fs
     .readdirSync(path.join(repo, 'cli/src'))
-    .filter((f) => f.startsWith('launch') && f.endsWith('.ts')))
+    .filter((f) => f.endsWith('.ts')))
     fs.copyFileSync(path.join(repo, 'cli/src', file), path.join(root, 'cli/src', file))
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'dir')
   for (const dir of [

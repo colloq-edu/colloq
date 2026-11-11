@@ -25,6 +25,9 @@ export async function precompress(directory) {
     }
   }
   await walk(path.join(root, 'assets'))
+  try { await walk(path.join(root, 'plotly', 'chunks')) } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
   for (const copied of ['pdf/pdf.worker.min.mjs', 'plotly/plotly.min.js']) {
     const file = path.join(root, copied)
     try { if ((await stat(file)).isFile()) files.push(file) } catch (error) {

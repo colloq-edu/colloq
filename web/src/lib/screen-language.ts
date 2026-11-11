@@ -1,4 +1,5 @@
 import type { Locale } from '@shared/i18n-types'
+import { getLocale } from '@shared/i18n-runtime'
 
 /**
  * Which part of the product is speaking — and so which dictionary it needs.
@@ -16,17 +17,19 @@ import type { Locale } from '@shared/i18n-types'
  * panel, nor the reader. All it shares with them is `common` and the trimmed
  * server catalog.
  */
-export type MessageArea = 'room' | 'admin' | 'reader' | 'competitions'
+export type MessageArea = 'room' | 'room-extra' | 'admin' | 'reader' | 'competitions'
 
 /*
  * Listed by hand and in full, because the bundler cannot parse
  * `import('./messages/' + name)`: it either drags the whole directory into the
- * build or finds nothing. Eight lines are the price of Rollup seeing exactly
- * eight chunks and naming them predictably (firstPaint looks at these names).
+ * build or finds nothing. Explicit entries give Rollup predictable chunk
+ * names (firstPaint looks at these names).
  */
 const MODULES: Record<string, () => Promise<unknown>> = {
   'room-ru': () => import('./messages/room-ru'),
   'room-en': () => import('./messages/room-en'),
+  'room-extra-ru': () => import('./messages/room-extra-ru'),
+  'room-extra-en': () => import('./messages/room-extra-en'),
   'admin-ru': () => import('./messages/admin-ru'),
   'admin-en': () => import('./messages/admin-en'),
   'reader-ru': () => import('./messages/reader-ru'),
@@ -45,8 +48,8 @@ export function loadAreaMessages(area: MessageArea, locale: Locale): Promise<unk
   const known = loading.get(name)
   if (known) return known
   const started = MODULES[name]().catch((cause: unknown) => {
-    // A failure is not cached: "Reload the page" at the bottom of the screen
-    // must work.
+    // Release our promise so transient failures can retry. The browser may
+    // still cache a rejected module; the local error UI then offers Reload.
     if (loading.get(name) === started) loading.delete(name)
     throw cause
   })
@@ -75,4 +78,10 @@ export async function loadLocalizedScreen<T>(
  */
 export async function reloadAreaMessages(locale: Locale): Promise<void> {
   await Promise.all([...shown].map((area) => loadAreaMessages(area, locale)))
+}
+
+/** The static room needs only its visible copy; a feature gets the rest first. */
+export async function loadLocalizedFeature<T>(feature: () => Promise<T>): Promise<T> {
+  if (shown.has('room')) await loadAreaMessages('room-extra', getLocale())
+  return feature()
 }

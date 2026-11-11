@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { messages } from '../shared/i18n.js'
-import { collectClientKeys } from '../web/scripts/entry-messages.js'
+import { collectClientKeys, collectEntryMessages } from '../web/scripts/entry-messages.js'
 import config from '../web/vite.config.js'
 
 const root = path.resolve(import.meta.dirname, '..')
@@ -31,11 +31,11 @@ function built(area: string, locale: string): Record<string, Record<string, unkn
   return JSON.parse(code.slice(code.indexOf('registerMessages(') + 'registerMessages('.length, code.lastIndexOf(')')))
 }
 
-test('every area speaks every language, and the loader names all eight modules', () => {
+test('every area speaks every language, and the loader names every module', () => {
   const files = fs.readdirSync(folder).sort()
   assert.deepEqual(files, [
     'admin-en.ts', 'admin-ru.ts', 'competitions-en.ts', 'competitions-ru.ts',
-    'reader-en.ts', 'reader-ru.ts', 'room-en.ts', 'room-ru.ts',
+    'reader-en.ts', 'reader-ru.ts', 'room-en.ts', 'room-extra-en.ts', 'room-extra-ru.ts', 'room-ru.ts',
   ])
   // The names are listed in the loader by hand (the bundler does not read
   // computed paths), so they can drift away from the directory silently.
@@ -53,7 +53,9 @@ test('a screen carries one language and only the catalogs it reads', () => {
       assert.deepEqual(Object.keys(pair), ['ru'], `${name} ships a second language`)
     }
   }
-  assert.ok(room['room.ui.0'] && room['common.reload'] && room['activity.title'])
+  const entry = collectEntryMessages(root, messages).messages
+  assert.ok(entry['room.ui.0'] && entry['common.reload'] && room['room.ui.494'])
+  assert.ok(built('room-extra', 'ru')['activity.title'])
   assert.equal(room['admin.teaching'], undefined, 'the room pays for the teacher panel')
   assert.ok(admin['admin.teaching'] && admin['room.ui.0'])
   assert.ok(reader['room.ui.0'])
@@ -64,8 +66,8 @@ test('a screen carries one language and only the catalogs it reads', () => {
   assert.equal(competitions['room.ui.0'], undefined)
   assert.equal(competitions['admin.teaching'], undefined)
   // Russian and English are separate chunks, not one chunk with two halves.
-  assert.equal(built('room', 'en')['room.ui.0'].en, messages['room.ui.0'].en)
-  assert.equal(built('room', 'en')['room.ui.0'].ru, undefined)
+  assert.equal(built('room', 'en')['room.ui.494'].en, messages['room.ui.494'].en)
+  assert.equal(built('room', 'en')['room.ui.494'].ru, undefined)
 })
 
 test('one language of the room is a fraction of what every screen used to carry', () => {
@@ -85,7 +87,7 @@ test('the server catalog keeps exactly what a browser can look up', () => {
     'server.councilSharedKernel', 'server.kernel_word.busy', 'server.kernel_word.restarting',
     'server.shell_word.closed', 'server.skip_reason_text.duplicate',
   ]) assert.ok(client.has(key), `the client looks up ${key}, but it was cut out`)
-  const room = built('room', 'ru')
+  const room = { ...collectEntryMessages(root, messages).messages, ...built('room', 'ru') }
   for (const key of client) assert.ok(room[key], `${key} did not reach the room`)
   // And what the server writes by itself (the class archive's README, link
   // cards) keeps its words out of the browser.

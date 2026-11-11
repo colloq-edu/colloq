@@ -1206,6 +1206,12 @@
     </div>
   {:else if tab === 'board'}
     <div class="comp-feed py-5">
+      <div class="mb-3 flex justify-end">
+        <a class="btn-outline" href={adminApi.competitionLeaderboardCsvUrl(c.id)} download>
+          <Icon name="download" size={14} />
+          {tr('admin.competitions.downloadBoard')}
+        </a>
+      </div>
       {#if board === null}
         <RowsSkeleton label={tr('competitions.loading')} />
       {:else if publicBoard.length === 0}

@@ -13,6 +13,7 @@ import { activityMessages } from '../shared/locales/activity'
 import { competitionsMessages } from '../shared/locales/competitions'
 import { collectEntryMessages, collectClientKeys } from './scripts/entry-messages'
 import { PRELOAD_MANIFEST, type PreloadManifest } from './scripts/preload-manifest'
+import { isPlotlyModulePath } from '../shared/plotly'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
 /*
@@ -63,7 +64,8 @@ function entryLanguage(): Plugin {
  * the tests load them, and they are the only place where an area's
  * COMPOSITION is written down. Here their content is replaced with the
  * build-time one: the same catalogs, read from their own imports, but one
- * language and a trimmed `server`.
+ * language and a trimmed `server`. Room copy is further partitioned by its
+ * static source graph; optional features register room-extra before evaluation.
  */
 function screenLanguage(): Plugin {
   const root = fileURLToPath(new URL('../', import.meta.url))
@@ -77,7 +79,8 @@ function screenLanguage(): Plugin {
     competitions: competitionsMessages,
   }
   /*
-   * The server catalog is the only one cut by keys rather than taken whole.
+   * Server keys are trimmed across the whole browser, independently of the
+   * room core/optional partition below.
    *
    * Almost all of it never reaches the browser: it is publication pages,
    * emails and the log. The client translates the server's state WORDS
@@ -87,13 +90,17 @@ function screenLanguage(): Plugin {
    * they need no dictionary.
    */
   let client: Set<string> | null = null
+  let roomCore: ReturnType<typeof collectEntryMessages> | null = null
+  let entryCore: ReturnType<typeof collectEntryMessages> | null = null
   return {
     name: 'colloq-screen-language',
     enforce: 'pre',
+    buildStart() { client = null; roomCore = null; entryCore = null },
+    watchChange() { client = null; roomCore = null; entryCore = null },
     load(id) {
       const file = id.split('?')[0]
       if (path.dirname(file) !== folder || !file.endsWith('.ts')) return
-      const [area, locale] = path.basename(file, '.ts').split('-')
+      const [, area, locale] = /^(.*)-(ru|en)$/.exec(path.basename(file, '.ts')) ?? []
       if (!area || !LOCALES.includes(locale as Locale)) {
         throw new Error(`colloq-screen-language: ${file} — the name must be <area>-<ru|en>.ts`)
       }
@@ -101,6 +108,11 @@ function screenLanguage(): Plugin {
       const wanted = [...source.matchAll(/@shared\/locales\/([a-z]+)/g)].map((match) => match[1])
       if (wanted.length === 0) throw new Error(`colloq-screen-language: ${file} has no catalogs`)
       client ??= collectClientKeys(root, messages, 'server')
+      if (area === 'room' || area === 'room-extra') {
+        roomCore ??= collectEntryMessages(root, messages, ['web/src/screens/SessionScreen.svelte'])
+        entryCore ??= collectEntryMessages(root, messages)
+        for (const watched of [...roomCore.files, ...entryCore.files]) this.addWatchFile(watched)
+      }
       const out: Record<string, Record<string, unknown>> = {}
       for (const name of wanted) {
         const catalog = catalogs[name]
@@ -108,6 +120,13 @@ function screenLanguage(): Plugin {
         this.addWatchFile(path.join(root, 'shared/locales', `${name}.ts`))
         for (const [key, pair] of Object.entries(catalog)) {
           if (name === 'server' && !client.has(key)) continue
+          if (area === 'room' || area === 'room-extra') {
+            // The entry already registered both languages. Optional features
+            // register the remainder before their component evaluates.
+            if (entryCore!.messages[key]) continue
+            const initial = name === 'server' || Boolean(roomCore!.messages[key])
+            if ((area === 'room') !== initial) continue
+          }
           out[key] = { [locale]: pair[locale as Locale] }
         }
       }
@@ -173,14 +192,12 @@ function packageOf(id: string): string | null {
  */
 const ROOM_CHUNK = 'SessionScreen'
 /*
- * And two chunks the room asks for dynamically, but ALWAYS asks for: the cell
- * editor and the output renderer. The static graph (`reach` in firstPaint)
- * cannot reach them — that graph is what everything else is computed from, so
- * the list does not lag behind the build — yet they have to be warmed along
- * with the screen, otherwise the notebook paints in two network waves instead
- * of one.
+ * The cell editor is requested dynamically, but every code notebook needs it.
+ * The static graph cannot reach it, so warm it alongside the screen to avoid
+ * a second request wave before editing. Rich-output code and its renderer
+ * load only when there is content to display.
  */
-const ROOM_ALSO = ['codemirror', 'render'] as const
+const ROOM_ALSO = ['codemirror'] as const
 
 function manualChunks(id: string): string | undefined {
   // The editor's palette is never wanted without the editor, and a second
@@ -189,6 +206,13 @@ function manualChunks(id: string): string | undefined {
   const pkg = packageOf(id)
   if (!pkg) return undefined
   if (CODEMIRROR_CPP.test(pkg)) return 'codemirror-cpp'
+  // Notebook search is its own UI; only the file editor uses CodeMirror search.
+  if (pkg === '@codemirror/search') return 'codemirror-search'
+  // A code cell needs Python. File editors and an actively edited markdown
+  // note request their own grammars; putting those in `codemirror` made every
+  // seminar download HTML, JavaScript, CSS, YAML and JSON before the first key.
+  const grammar = /^(?:@codemirror\/lang-|@lezer\/)(markdown|html|javascript|css|yaml|json)$/.exec(pkg)
+  if (grammar) return `language-${grammar[1]}`
   if (CODEMIRROR.test(pkg)) return 'codemirror'
   if (YJS.test(pkg)) return 'yjs'
   if (RENDER.test(pkg)) return 'render'
@@ -395,8 +419,8 @@ function firstPaint(): Plugin {
          * everything it pulls in statically — the four names listed by hand
          * lagged a wave behind, because SessionScreen also statically pulls in
          * yjs, CellOutputs, the clipboard, storage and the seminar link. The
-         * editor and the renderer it asks for dynamically, but always, so they
-         * are named separately.
+         * editor is requested dynamically but needed for immediate editing,
+         * so it is named separately. Content renderers follow actual content.
          *
          * Only returning identities need these before the form. Cold visitors
          * warm them after paint, while typing, instead of waiting for /join
@@ -455,8 +479,24 @@ function firstPaint(): Plugin {
   }
 }
 
+/** The chart iframe has an opaque origin in development as in production. */
+function plotlyModules(): Plugin {
+  return {
+    name: 'colloq-plotly-modules',
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        try {
+          const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://colloq.local').pathname)
+          if (isPlotlyModulePath(pathname)) response.setHeader('Access-Control-Allow-Origin', '*')
+        } catch { /* malformed paths are left to Vite's ordinary handler */ }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [entryLanguage(), screenLanguage(), svelte(), firstPaint()],
+  plugins: [entryLanguage(), screenLanguage(), plotlyModules(), svelte(), firstPaint()],
   define: { __COLLOQ_VERSION__: JSON.stringify(COLLOQ_VERSION) },
   resolve: {
     alias: {

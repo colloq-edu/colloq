@@ -13,7 +13,7 @@
    * — and every export of every package has to be assumed live, which measured
    * 28 KB of CodeMirror this editor never calls.
    */
-  async function importCodeMirror() {
+  async function importCodeMirror(markdown: boolean) {
     const [autocomplete, commands, md, py, language, state, view, collab, theme] = await Promise.all(
       [
         import('@codemirror/autocomplete').then(
@@ -38,7 +38,7 @@
           indentLess,
           indentMore,
         })),
-        import('@codemirror/lang-markdown').then(({ markdown }) => ({ markdown })),
+        markdown ? import('@codemirror/lang-markdown').then(({ markdown }) => ({ markdown })) : null,
         /*
          * Parsing the cell's own text — as a fallback source of completion.
          *
@@ -108,10 +108,18 @@
 
   type CodeMirror = Awaited<ReturnType<typeof importCodeMirror>>
 
-  let inFlight: Promise<CodeMirror> | null = null
+  const inFlight = new Map<boolean, Promise<CodeMirror>>()
 
-  function loadCodeMirror(): Promise<CodeMirror> {
-    return (inFlight ??= importCodeMirror())
+  function loadCodeMirror(markdown: boolean): Promise<CodeMirror> {
+    let loading = inFlight.get(markdown)
+    if (!loading) {
+      loading = importCodeMirror(markdown).catch((error) => {
+        inFlight.delete(markdown)
+        throw error
+      })
+      inFlight.set(markdown, loading)
+    }
+    return loading
   }
 </script>
 
@@ -1742,7 +1750,7 @@
       state: EditorState.create({
         doc: ytext.toString(),
         extensions: [
-          lang === 'python' ? cm.py.python() : cm.md.markdown(),
+          lang === 'python' ? cm.py.python() : cm.md!.markdown(),
           bracketMatching(),
           closeBrackets(),
           /*
@@ -1997,7 +2005,7 @@
     /** The highlight's fade clock — one per editor, a jump restarts it. */
     let fading: ReturnType<typeof setTimeout> | null = null
 
-    void loadCodeMirror().then((cm) => {
+    void loadCodeMirror(lang === 'markdown').then((cm) => {
       if (disposed) return
       // Asked at the last moment rather than tracked: whatever the shim did
       // with focus, this is the one question that matters.

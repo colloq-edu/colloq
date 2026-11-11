@@ -20,6 +20,7 @@ import { tr } from '@shared/i18n'
  */
 import type { CellOutput, StreamName } from '@shared/notebook'
 import type { CouncilRun } from '@shared/protocol'
+import { boundedOutputError } from './output-error.js'
 import {
   figureChars,
   figureTooBigNotice,
@@ -34,10 +35,7 @@ export const MAX_ATTEMPT_DATA_CHARS = 2 * 1024 * 1024
 const MAX_TRACEBACK_LINES = 60
 const MAX_ERROR_LINE_CHARS = 2 * 1024
 
-function clip(text: string, max: number): string {
-  if (text.length <= max) return text
-  return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
-}
+const MAX_ERROR_CHARS = 16 * 1024
 
 /** What the kernel needs to compute an attempt, and whom to tell the result. */
 export interface CouncilJob {
@@ -71,6 +69,7 @@ export class CouncilOutputBuffer {
   private usedData = 0
   private truncated = false
   private dataTruncated = false
+  private figureNoticed = false
   /** Promised `clear_output(wait=True)`: the next record replaces, not appends. */
   private superseded = false
 
@@ -91,11 +90,7 @@ export class CouncilOutputBuffer {
     this.used += body.length
     if (body) this.append(name, body)
     if (this.truncated) {
-      this.outputs.push({
-        kind: 'stream',
-        name: 'stderr',
-        text: tr("server.colloqAttemptOutputStoppedAfterCharactersSave.97282a", { p0: MAX_ATTEMPT_OUTPUT_CHARS }),
-      })
+      this.say(tr("server.colloqAttemptOutputStoppedAfterCharactersSave.97282a", { p0: MAX_ATTEMPT_OUTPUT_CHARS }))
     }
   }
 
@@ -120,17 +115,16 @@ export class CouncilOutputBuffer {
     const figure = figureChars(bundle)
     if (figure > 0 && figure > MAX_ATTEMPT_DATA_CHARS) {
       bundle = withoutFigure(bundle)
-      this.outputs.push({ kind: 'stream', name: 'stderr', text: figureTooBigNotice(figure) })
+      if (!this.figureNoticed) {
+        this.figureNoticed = true
+        this.say(figureTooBigNotice(figure))
+      }
       if (Object.keys(bundle).length === 0) return
     }
     const size = JSON.stringify(bundle).length
     if (this.dataTruncated || this.usedData + size > MAX_ATTEMPT_DATA_CHARS) {
       if (!this.dataTruncated) {
-        this.outputs.push({
-          kind: 'stream',
-          name: 'stderr',
-          text: tr("server.colloqTheAttemptImageLimitWasReached.3d579d"),
-        })
+        this.say(tr("server.colloqTheAttemptImageLimitWasReached.3d579d"))
       }
       this.dataTruncated = true
       return
@@ -141,17 +135,21 @@ export class CouncilOutputBuffer {
 
   error(ename: string, evalue: string, traceback: string[]): void {
     this.settle()
-    const lines = traceback.map((line) => clip(line, MAX_ERROR_LINE_CHARS))
-    const clipped =
-      lines.length > MAX_TRACEBACK_LINES
-        ? [...lines.slice(0, 20), tr("server.moreFrames.6caf4c", { p0: lines.length - 50 }), ...lines.slice(-30)]
-        : lines
-    this.outputs.push({
-      kind: 'error',
-      ename: clip(ename, MAX_ERROR_LINE_CHARS),
-      evalue: clip(evalue, MAX_ERROR_LINE_CHARS),
-      traceback: clipped,
+    this.putError(ename, evalue, traceback)
+  }
+
+  private putError(ename: string, evalue: string, traceback: string[], keepUseful = false): void {
+    this.outputs = this.outputs.filter(output => {
+      if (output.kind !== 'error') return true
+      if (keepUseful && !['', 'KeyboardInterrupt', 'Interrupted'].includes(output.ename)) return true
+      this.used -= JSON.stringify({ ename: output.ename, evalue: output.evalue, traceback: output.traceback }).length
+      return false
     })
+    const error = boundedOutputError(ename, evalue, traceback, MAX_ERROR_CHARS, MAX_ERROR_LINE_CHARS, MAX_TRACEBACK_LINES)
+    const chars = JSON.stringify(error).length
+    this.makeTextRoom(chars)
+    this.used += chars
+    this.outputs.push({ kind: 'error', ...error })
   }
 
   /**
@@ -173,16 +171,13 @@ export class CouncilOutputBuffer {
    * a loss with no gain.
    */
   stopped(evalue: string): void {
-    this.outputs = this.outputs.filter(
-      (o) => !(o.kind === 'error' && (o.ename === 'KeyboardInterrupt' || o.ename === 'Interrupted')),
-    )
     /*
      * The exception name is empty on purpose: the card draws "name: text", and
      * the student read "TimeLimit: Остановлено: …", an English word in front
      * of a Russian phrase that adds nothing. The machine-readable stop mark is
      * `CouncilRun.timedOut`; nobody looks for it by the error name.
      */
-    this.outputs.push({ kind: 'error', ename: '', evalue, traceback: [] })
+    this.putError('', evalue, [], true)
   }
 
   /** `clear_output(wait=False)`: erase now. */
@@ -192,6 +187,7 @@ export class CouncilOutputBuffer {
     this.usedData = 0
     this.truncated = false
     this.dataTruncated = false
+    this.figureNoticed = false
     this.superseded = false
   }
 
@@ -213,6 +209,24 @@ export class CouncilOutputBuffer {
   private settle(): void {
     if (!this.superseded) return
     this.clear()
+  }
+
+  private makeTextRoom(chars: number, fromEnd = false): void {
+    let excess = this.used + chars - MAX_ATTEMPT_OUTPUT_CHARS
+    for (const output of fromEnd ? [...this.outputs].reverse() : this.outputs) {
+      if (excess <= 0) break
+      if (output.kind !== 'stream') continue
+      const cut = Math.min(excess, output.text.length)
+      output.text = fromEnd ? output.text.slice(0, output.text.length - cut) : output.text.slice(cut)
+      this.used -= cut
+      excess -= cut
+    }
+  }
+
+  private say(text: string): void {
+    this.makeTextRoom(text.length, true)
+    this.used += text.length
+    this.outputs.push({ kind: 'stream', name: 'stderr', text })
   }
 
   /** Adjacent chunks of one stream become one record, as in the document. */

@@ -18,9 +18,9 @@
  *                             why the frame is a server route rather than a
  *                             file in `web/public`.
  *   default-src 'none'        everything not mentioned below is forbidden.
- *   script-src <hash> <url>   exactly two scripts: our loader (by the hash of
- *                             its text) and the plotly bundle at its exact
- *                             address. `'self'` is no good here: the origin
+ *   script-src <hash> <url>   exactly two sources: our loader (by the hash of
+ *                             its text) and generated Plotly modules in their
+ *                             dedicated directory. `'self'` is no good here: the origin
  *                             is opaque, and the word has nothing to rest on.
  *   style-src 'unsafe-inline' plotly lays out the chart with inline styles and
  *                             its own `<style>`; without this nothing draws.
@@ -31,7 +31,7 @@
  *   connect-src 'none'        not a single request leaves the frame.
  *   frame-ancestors 'self'    only the instance itself may embed the frame.
  *
- * The frame has no network at all, so the figure arrives by `postMessage`
+ * The frame cannot fetch data, so the figure arrives by `postMessage`
  * from the page; see `shared/plotly.ts`, which holds the message shape shared
  * by both sides.
  */
@@ -39,6 +39,7 @@ import { createHash } from 'node:crypto'
 import {
   ORIGIN_RE,
   PLOTLY_BUNDLE_PATH,
+  PLOTLY_MODULE_PATH,
   PLOTLY_MSG,
   PLOTLY_ORIGIN_PARAM,
 } from '@shared/plotly'
@@ -53,7 +54,7 @@ import {
  *
  * The message listener is installed as the FIRST action, before the bundle
  * loads: the figure comes from the page, and the page may send it before the
- * five megabytes of plotly arrive. One that arrives early waits in `pending`.
+ * shared plotting core arrives. One that arrives early waits in `pending`.
  *
  * No errors are shown in words here: the page knows the language, the frame
  * does not. The frame sends the reason as a machine string, and the notebook
@@ -61,8 +62,10 @@ import {
  */
 const BOOT = `(function(){
   "use strict";
-  var TAG=${JSON.stringify(PLOTLY_MSG)},SRC=${JSON.stringify(PLOTLY_BUNDLE_PATH)};
-  var host=document.getElementById("plot"),pending=null,shown=false,sent=-1;
+  // The old unversioned URL was a classic script cached for an hour. A new
+  // no-cache response cannot invalidate that already-fresh browser entry.
+  var TAG=${JSON.stringify(PLOTLY_MSG)},SRC=${JSON.stringify(PLOTLY_BUNDLE_PATH + '?modules=1')};
+  var host=document.getElementById("plot"),pending=null,shown=false,sent=-1,runtime=null,generation=0;
   function send(msg){msg.colloq=TAG;try{parent.postMessage(msg,"*")}catch(e){}}
   function measure(){
     var h=Math.ceil(host.getBoundingClientRect().height);
@@ -70,8 +73,9 @@ const BOOT = `(function(){
   }
   function fail(reason){send({kind:"failed",reason:String(reason).slice(0,300)})}
   function draw(figure){
-    if(!window.Plotly){pending=figure;return}
+    if(!runtime){pending=figure;return}
     pending=null;
+    var request=++generation;
     var layout=figure.layout||{};
     delete layout.width;
     layout.autosize=true;
@@ -81,13 +85,14 @@ const BOOT = `(function(){
     // a frame that has no height at all.
     if(typeof layout.height!=="number"||!isFinite(layout.height))layout.height=450;
     host.style.height=layout.height+"px";
-    try{
-      window.Plotly.newPlot(host,figure.data,layout,{
+    runtime.prepare(figure).then(function(Plotly){
+      if(request!==generation)return;
+      return Plotly.newPlot(host,figure.data,layout,{
         displaylogo:false,responsive:true,scrollZoom:false,showLink:false,
         plotlyServerURL:"",showSendToCloud:false,showEditInChartStudio:false,
         modeBarButtonsToRemove:["sendDataToCloud"]
-      }).then(function(){shown=true;measure()},function(err){fail(err&&err.message||err)});
-    }catch(err){fail(err&&err.message||err)}
+      }).then(function(){if(request===generation){shown=true;measure()}});
+    }).catch(function(err){if(request===generation)fail(err&&err.message||err)});
   }
   window.addEventListener("message",function(e){
     if(e.source!==window.parent)return;
@@ -102,11 +107,7 @@ const BOOT = `(function(){
       measure();
     }).observe(document.documentElement);
   }
-  var tag=document.createElement("script");
-  tag.src=SRC;
-  tag.onload=function(){send({kind:"ready"});if(pending)draw(pending)};
-  tag.onerror=function(){fail("bundle")};
-  document.head.appendChild(tag);
+  import(SRC).then(function(module){runtime=module;send({kind:"ready"});if(pending)draw(pending)},function(){fail("bundle")});
 })();`
 
 /** The loader's hash in the form the browser reads it: sha256 of the bytes. */
@@ -126,7 +127,7 @@ export function framePolicy(origin: string): string {
   return [
     'sandbox allow-scripts allow-downloads',
     "default-src 'none'",
-    `script-src ${BOOT_HASH} ${origin}${PLOTLY_BUNDLE_PATH}`,
+    `script-src ${BOOT_HASH} ${origin}${PLOTLY_MODULE_PATH}`,
     "style-src 'unsafe-inline'",
     'img-src data: blob:',
     "connect-src 'none'",

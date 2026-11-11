@@ -242,6 +242,8 @@ interface BundleReport {
    *  No import edge leads to them, so the module graph above cannot see them,
    *  and the pdf.js worker alone is bigger than any chunk in it. */
   extras: Array<{ file: string; raw: number; gzip: number }>
+  /** The actual static module graph fetched by a first ordinary Plotly chart. */
+  plotly: { files: string[]; raw: number; gzip: number; missing: string[] } | null
   totalRaw: number
   totalGzip: number
   blockingRaw: number
@@ -484,6 +486,29 @@ function bundle(): BundleReport | null {
     })
     .sort((a, b) => b.gzip - a.gzip)
 
+  // Plotly's loader dynamically selects trace modules, but its own static
+  // graph is paid in full by every chart. Cost it from emitted JS imports,
+  // not the build manifest: splitting a 1.5MiB bundle into smaller files must
+  // not turn the same cold transfer green.
+  const outside = new Map(extras.map(file => [file.file, file]))
+  const plotlyEntry = '/plotly/plotly.min.js'
+  let plotly: BundleReport['plotly'] = null
+  if (outside.has(plotlyEntry)) {
+    const fetched = new Set<string>()
+    const pending = [plotlyEntry]
+    while (pending.length > 0) {
+      const file = pending.pop()!
+      if (fetched.has(file)) continue
+      fetched.add(file)
+      if (!outside.has(file)) continue
+      pending.push(...staticImports(file, readFileSync(join(DIST, file.slice(1)), 'utf8')))
+    }
+    const files = [...fetched].sort()
+    plotly = { files, missing: files.filter(file => !outside.has(file)),
+      raw: files.reduce((sum, file) => sum + (outside.get(file)?.raw ?? 0), 0),
+      gzip: files.reduce((sum, file) => sum + (outside.get(file)?.gzip ?? 0), 0) }
+  }
+
   const blocking = chunks.filter((c) => c.load === 'blocking')
   const preload = chunks.filter((c) => c.load === 'preload')
   const seminar = new Set(scenarios.filter((s) => s.route === 'room').flatMap((s) => s.files))
@@ -500,6 +525,7 @@ function bundle(): BundleReport | null {
     dir: DIST_LABEL,
     chunks,
     extras,
+    plotly,
     totalRaw: chunks.reduce((n, c) => n + c.raw, 0) + extras.reduce((n, e) => n + e.raw, 0),
     totalGzip: chunks.reduce((n, c) => n + c.gzip, 0) + extras.reduce((n, e) => n + e.gzip, 0),
     blockingRaw: blocking.reduce((n, c) => n + c.raw, 0),
@@ -612,6 +638,12 @@ function printBundle(b: BundleReport | null): void {
   if (biggestExtra) {
     check('largest file outside the graph', biggestExtra.gzip / 1024, MAX_ONDEMAND_ASSET_GZIP_KB, 'KB',
       `${biggestExtra.file} — no import leads to it, so no budget above ever sees it`)
+  }
+  if (b.plotly) {
+    check('cold Plotly graph gzip', b.plotly.gzip / 1024, MAX_ONDEMAND_ASSET_GZIP_KB, 'KB',
+      `${b.plotly.files.length} actually imported modules for a first scatter; trace modules remain on demand`)
+    check('Plotly imports missing from build', b.plotly.missing.length, 0, '',
+      b.plotly.missing.join(', '))
   }
   say()
 }
@@ -1064,6 +1096,7 @@ if (JSON_MODE) {
       entryFiles: b.entryFiles,
       blockingLibs: b.blockingLibs, preloadLibs: b.preloadLibs,
       scenarios: b.scenarios,
+      plotly: b.plotly,
       manifestProblem: b.manifestProblem,
       strays: b.strays,
       htmlBytes: b.htmlBytes,

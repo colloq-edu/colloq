@@ -57,9 +57,12 @@ function resolveImport(root: string, importer: string, name: string): string | n
   return null
 }
 
-/** The initial router/form graph, excluding type-only and dynamic imports. */
-export function collectEntryMessages(root: string, catalog: MessageCatalog): { messages: MessageCatalog; files: string[] } {
-  const pending = [path.join(root, 'web/src/main.ts'), path.join(root, 'web/src/App.svelte')]
+/** A static client graph (the router/form by default), excluding type-only and dynamic imports. */
+export function collectEntryMessages(
+  root: string, catalog: MessageCatalog,
+  entries: readonly string[] = ['web/src/main.ts', 'web/src/App.svelte'],
+): { messages: MessageCatalog; files: string[] } {
+  const pending = entries.map((file) => path.join(root, file))
   const seen = new Set<string>()
   const words = new Set<string>()
   while (pending.length > 0) {

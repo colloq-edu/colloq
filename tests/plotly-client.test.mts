@@ -184,8 +184,7 @@ test('plotly.js does not get into the app bundle, not into any chunk', () => {
   // And the copy for the frame really is laid out by a build step — otherwise the
   // address in the policy would lead to a 404, and the chart would be a placeholder forever.
   const web = JSON.parse(read('web/package.json')) as { scripts: Record<string, string> }
-  assert.match(web.scripts['plotly:dist'], /plotly\.js-strict-dist-min/)
-  assert.match(web.scripts['plotly:dist'], /public\/plotly\/plotly\.min\.js/)
+  assert.equal(web.scripts['plotly:dist'], 'node scripts/plotly.mjs')
   for (const script of ['dev', 'build']) {
     assert.match(web.scripts[script], /assets/, `${script} does not lay the copies out into public/`)
   }
@@ -193,7 +192,7 @@ test('plotly.js does not get into the app bundle, not into any chunk', () => {
 })
 
 test('the strict build is used: without it the frame policy would need unsafe-eval', () => {
-  const web = JSON.parse(read('web/package.json')) as { dependencies: Record<string, string> }
-  assert.ok(web.dependencies['plotly.js-strict-dist-min'], 'the strict build is not among the dependencies')
+  const web = JSON.parse(read('web/package.json')) as { dependencies: Record<string, string>; devDependencies: Record<string, string> }
+  assert.ok(web.devDependencies['plotly.js'], 'the strict build source is not among the build dependencies')
   assert.equal(web.dependencies['plotly.js-dist-min'], undefined, 'the regular build drags eval along')
 })

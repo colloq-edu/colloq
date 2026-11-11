@@ -25,6 +25,7 @@ import {
   getSubmission,
   putFile,
   queueRow,
+  rotateEntrantKey,
   setCompetitionState,
   updateCompetition,
   updateSubmission,
@@ -124,6 +125,21 @@ async function firstFrame(cookie: string | null): Promise<{ status: number; data
 }
 
 /* ------------------------------------------------------------- stream */
+
+test('a live stream ends after ordinary key rotation before delivering another private update', async () => {
+  const entrant = await join('@revoked_live')
+  const control = new AbortController()
+  const watchdog = setTimeout(() => control.abort(), 5000)
+  try {
+    const response = await call('/api/k/competitions/live-k/stream', { cookie: entrant.cookie, signal: control.signal })
+    assert.equal(response.status, 200)
+    const reader = response.body!.getReader()
+    assert.equal((await reader.read()).done, false)
+    rotateEntrantKey(entrant.id)
+    queue(entrant.id, 'after-revocation.ipynb')
+    assert.equal((await reader.read()).done, true)
+  } finally { clearTimeout(watchdog); control.abort() }
+})
 
 test("the live stream requires the entrant's cookie", async () => {
   const anonymous = await firstFrame(null)

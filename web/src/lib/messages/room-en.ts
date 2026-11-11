@@ -1,6 +1,11 @@
 /*
- * The same as room-ru.ts, in the other language; why there are two files and
- * where the build plugin learns the area's contents from is explained there.
+ * The room dictionary's catalog sources. Node tests register them whole;
+ * the build keeps the selected language and the keys in SessionScreen's
+ * static dependency graph, excluding copy already registered by the entry.
+ *
+ * room-extra carries the rest. loadLocalizedFeature registers it before an
+ * optional component evaluates, and reloadAreaMessages includes it after a
+ * language switch once such a feature has been opened.
  */
 import { registerMessages } from '@shared/i18n-runtime'
 import { commonMessages } from '@shared/locales/common'

@@ -4,6 +4,7 @@ import { cellOutputs, findCell, type OutputBlob, type StreamName, type YOutput }
 import { SPILL_MIMES, spillEncoding } from '@shared/publish'
 import { putBlob } from '../blobs.js'
 import { config } from '../config.js'
+import { boundedOutputError } from './output-error.js'
 import {
   MAX_FIGURE_CHARS,
   figureChars,
@@ -109,24 +110,9 @@ const REF_CHARS = 150
 
 /** RecursionError tracebacks run to thousands of identical frames. */
 const MAX_TRACEBACK_LINES = 80
-/**
- * The length of one error line: both `evalue` and each traceback frame.
- *
- * An error bypasses the cell ceiling, because it is the very reason for the
- * run, but that does not mean "as much as you like".
- * `assert len(rows) == 0, rows` on a list of a million elements puts megabytes
- * into `evalue` and into the last traceback line, and from there into all
- * thirty browsers, the snapshot and every history keyframe. Eighty frames of
- * four kilobytes plus the message are less than the cell ceiling, so the
- * record as a whole is bounded too.
- */
 const MAX_ERROR_LINE_CHARS = 4 * 1024
-
-/** Cut a line, saying in the line itself that it was cut. */
-function clip(text: string, max: number): string {
-  if (text.length <= max) return text
-  return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
-}
+/** One latest exception, inside the ordinary text ceiling. */
+const MAX_ERROR_CHARS = 64 * 1024
 
 /**
  * Collapse the frames of one line: `\r` means "write this line again".
@@ -162,6 +148,7 @@ export class OutputWriter {
   private usedData = 0
   private dataTruncated = false
   private dataNoticed = false
+  private figureNoticed = false
   /**
    * The unfinished line at the end of the document, the one a `\r` may still
    * rewrite.
@@ -271,6 +258,9 @@ export class OutputWriter {
     if (this.disposed) return
     // Ordering matters more than latency: a print() before a plot must stay before it.
     this.flush()
+    // A deferred clear restores the budget at the next write. Otherwise an
+    // already-refused frame must never be decoded or stored.
+    if (this.dataTruncated && !this.superseded) return
     // An image closes the stream line: there is nothing left to append to.
     this.forgetTail()
     /*
@@ -301,7 +291,10 @@ export class OutputWriter {
      */
     const heavy = this.heavyParts(bundle)
     this.write((outputs) => {
-      if (oversize > 0) this.say(outputs, figureTooBigNotice(oversize))
+      if (oversize > 0 && !this.figureNoticed) {
+        this.figureNoticed = true
+        this.say(outputs, figureTooBigNotice(oversize))
+      }
       // The bundle may have held only a figure, and that did not fit: then
       // there is no data record at all, only the line above.
       if (Object.keys(bundle).length === 0) return
@@ -318,11 +311,11 @@ export class OutputWriter {
        */
       let spilled = 0
       for (const body of heavy.values()) spilled += body.length
-      const cost =
+      const estimatedCost =
         JSON.stringify({ data: inline, execCount }).length +
         heavy.size * REF_CHARS +
         Math.ceil(spilled / BLOB_BUDGET_FACTOR)
-      if (this.dataTruncated || this.usedData + cost > this.dataBudget) {
+      if (this.dataTruncated || this.usedData + estimatedCost > this.dataBudget) {
         this.dataTruncated = true
         this.dataNotice(outputs)
         return
@@ -341,6 +334,14 @@ export class OutputWriter {
       const json = JSON.stringify(
         blobs.length > 0 ? { data: inline, blobs, execCount } : { data: inline, execCount },
       )
+      // Only stored blobs earn the discount. Failed writes leave base64 in
+      // `inline`, whose full serialized size must pass admission again.
+      const cost = json.length + Math.ceil(blobs.reduce((sum, blob) => sum + blob.bytes, 0) / BLOB_BUDGET_FACTOR)
+      if (this.usedData + cost > this.dataBudget) {
+        this.dataTruncated = true
+        this.dataNotice(outputs)
+        return
+      }
       this.usedData += cost
       const output = new Y.Map<any>()
       output.set('kind', 'data')
@@ -380,18 +381,22 @@ export class OutputWriter {
     if (this.disposed) return
     this.flush()
     this.forgetTail()
-    const lines = traceback.map((line) => clip(line, MAX_ERROR_LINE_CHARS))
-    const clipped =
-      lines.length > MAX_TRACEBACK_LINES
-        ? [...lines.slice(0, 20), tr("server.moreFrames.6caf4c", { p0: lines.length - 60 }), ...lines.slice(-40)]
-        : lines
-    const json = JSON.stringify({
-      ename: clip(ename, MAX_ERROR_LINE_CHARS),
-      evalue: clip(evalue, MAX_ERROR_LINE_CHARS),
-      traceback: clipped,
-    })
-    // A traceback is the reason the cell was run; it goes in even past the cap.
+    const json = JSON.stringify(boundedOutputError(ename, evalue, traceback, MAX_ERROR_CHARS, MAX_ERROR_LINE_CHARS, MAX_TRACEBACK_LINES))
     this.write((outputs) => {
+      // Keep the last useful exception, not an unbounded list from repeated
+      // showtraceback(). Its space is paid from the same text budget.
+      // An emergency writer may inherit a previous writer's output. Recount
+      // retained streams rather than subtracting an error it never charged.
+      this.used = 0
+      for (let i = outputs.length - 1; i >= 0; i--) {
+        const old = outputs.get(i)
+        if (old.get('kind') === 'error') outputs.delete(i, 1)
+        else if (old.get('kind') === 'stream') {
+          const text = old.get('text')
+          if (text instanceof Y.Text) this.used += text.length
+        }
+      }
+      this.makeTextRoom(outputs, json.length)
       this.used += json.length
       const output = new Y.Map<any>()
       output.set('kind', 'error')
@@ -412,6 +417,7 @@ export class OutputWriter {
     this.usedData = 0
     this.dataTruncated = false
     this.dataNoticed = false
+    this.figureNoticed = false
     this.forgetTail()
     // An immediate erase answers the same question as a deferred one, and
     // answers it earlier. The promise is no longer needed.
@@ -494,6 +500,7 @@ export class OutputWriter {
         this.usedData = 0
         this.dataTruncated = false
         this.dataNoticed = false
+        this.figureNoticed = false
         this.forgetTail()
         if (outputs.length > 0) outputs.delete(0, outputs.length)
       }
@@ -585,6 +592,22 @@ export class OutputWriter {
     outputs.push([output])
   }
 
+  private makeTextRoom(outputs: Y.Array<YOutput>, chars: number, fromEnd = false): void {
+    let excess = this.used + chars - MAX_CELL_OUTPUT_CHARS
+    const streams = outputs.toArray()
+    for (const output of fromEnd ? streams.reverse() : streams) {
+      if (excess <= 0) break
+      if (output.get('kind') !== 'stream') continue
+      const text = output.get('text')
+      if (!(text instanceof Y.Text)) continue
+      const cut = Math.min(excess, text.length)
+      text.delete(fromEnd ? text.length - cut : 0, cut)
+      this.used -= cut
+      excess -= cut
+    }
+    this.forgetTail()
+  }
+
   /**
    * A word from the product, not from Python, as a separate stderr stream
    * record.
@@ -594,7 +617,9 @@ export class OutputWriter {
    * can be appended to a line after which our line has landed.
    */
   private say(outputs: Y.Array<YOutput>, text: string): void {
-    this.forgetTail()
+    // A truncation notice must not erase the beginning we promised to retain.
+    this.makeTextRoom(outputs, text.length, true)
+    this.used += text.length
     const output = new Y.Map<any>()
     output.set('kind', 'stream')
     output.set('name', 'stderr' as StreamName)

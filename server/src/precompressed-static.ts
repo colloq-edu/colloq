@@ -1,13 +1,13 @@
 import path from 'node:path'
 import { stat } from 'node:fs/promises'
 import type { RequestHandler } from 'express'
-import { PLOTLY_BUNDLE_PATH } from '@shared/plotly'
+import { PLOTLY_BUNDLE_PATH, isPlotlyModulePath } from '@shared/plotly'
 import { preferredEncodings } from './http-encoding.js'
 
 /*
- * The two bundles copied in beside the build rather than built by it, which
- * web/scripts/precompress.mjs compresses along with assets/. Named one by one:
- * the rest of pdf/ and plotly/ is not something the build vouches for. Plotly
+ * Assets generated beside Vite's build, which web/scripts/precompress.mjs
+ * compresses along with assets/. Only the PDF worker and the generated Plotly
+ * module namespace are allowed; arbitrary files in those folders are not. Plotly
  * had its sidecars written from the day it arrived and was still sent through
  * the per-request compressor: five megabytes compressed again for every
  * student's first chart, into a bigger file than the one lying next to it.
@@ -32,7 +32,7 @@ export function precompressedStatic(directory: string): RequestHandler {
     let relative: string
     try { relative = decodeURIComponent(req.path).replace(/^\/+/, '') } catch { return next() }
     // Only application assets, never API responses, workspace files or the SPA HTML.
-    if (!(relative.startsWith('assets/') || COPIED_BUNDLES.has(relative))) return next()
+    if (!(relative.startsWith('assets/') || COPIED_BUNDLES.has(relative) || isPlotlyModulePath('/' + relative))) return next()
     if (!/\.(?:m?js|css|svg|json)$/.test(relative) || relative.includes('\0')) return next()
     if (relative.split(/[\\/]/).some(part => part === '..' || part === '.')) return next()
     const encodings = preferredEncodings(req.headers['accept-encoding'])
@@ -51,7 +51,8 @@ export function precompressedStatic(directory: string): RequestHandler {
         res.vary('Accept-Encoding')
         res.type(path.extname(original))
         res.setHeader('Content-Encoding', encoding)
-        res.setHeader('Cache-Control', relative.startsWith('assets/')
+        if (isPlotlyModulePath('/' + relative)) res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Cache-Control', '/' + relative === PLOTLY_BUNDLE_PATH ? 'no-cache' : relative.startsWith('assets/') || relative.startsWith('plotly/chunks/')
           ? 'public, max-age=31536000, immutable'
           : 'public, max-age=3600')
         res.sendFile(file, { acceptRanges: false, cacheControl: false }, error => {

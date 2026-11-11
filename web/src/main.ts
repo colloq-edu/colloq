@@ -1,3 +1,4 @@
+import { moduleFailureHandled } from './lib/module-failures'
 import { mount } from 'svelte'
 import './index.css'
 import { initializeLanguage, onLanguageChange } from './lib/i18n.svelte'
@@ -82,9 +83,9 @@ function dismissShell(): void {
  * A chunk of the app did not arrive — say so once and offer a way out.
  *
  * Screens, highlighting, the reader and the output renderers live in
- * separate files and load on first demand. Retrying is possible now (a
- * failure is no longer cached), but that does not cure a redeploy under an
- * open tab: the file with the old name is gone from the server, and the
+ * separate files and load on first demand. A retry can recover a network
+ * failure, but browsers may retain rejected modules until the page reloads.
+ * A retry also cannot cure a redeploy under an open tab: the file with the old name is gone from the server, and the
  * server answers any path with index.html — the import fails parsing HTML as
  * a module, and it always will. Only a reload cures it, while the tab looks
  * alive: a cell just is not highlighted, a note's markup stays plain text,
@@ -155,7 +156,12 @@ function offerReload(): void {
 
 // Vite sends its own event from the preload helper — before the failure
 // reaches the importer, and whether or not the importer catches it.
-window.addEventListener('vite:preloadError', offerReload)
+window.addEventListener('vite:preloadError', (event) => {
+  const error = (event as Event & { payload: unknown }).payload
+  // Vite dispatches before rejecting the import. Give a local retry boundary
+  // the current turn to claim that error before drawing a global reload bar.
+  setTimeout(() => { if (!moduleFailureHandled(error)) offerReload() }, 0)
+})
 // And an import without the helper (and anything that surfaces "at the
 // top") is visible only this way.
 window.addEventListener('unhandledrejection', (event) => {

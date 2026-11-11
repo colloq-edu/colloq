@@ -848,6 +848,8 @@ export interface StoredTestReport extends TestReport {
 export interface StoredReport {
   tests: StoredTestReport[]
   stamp?: string
+  /** Optional for old reports: checks without an execution identity need a new run. */
+  environment?: { name: string; image: string }
 }
 
 /** A submission with everything the panel may read; the doors cut it down for whoever asks. */
@@ -973,6 +975,26 @@ export function listEntrantSubmissions(contestId: string, entrantId: string): St
   return (selectEntrantSubmissions.all(contestId, entrantId) as SubmissionRow[]).map(toSubmission)
 }
 
+type SubmissionVersionRow = Pick<StoredSubmission, 'id' | 'state' | 'verdict' | 'progress' | 'score' | 'passed' | 'judgedAt' | 'testsRevision'>
+
+/** The existing wire version, in the same order for full responses and lightweight stream queries. */
+export function submissionsVersion(rows: readonly SubmissionVersionRow[]): string {
+  return createHash('sha1')
+    .update(JSON.stringify(rows.map((row) => [row.id, row.state, row.verdict, row.progress, row.score, row.passed, row.judgedAt, row.testsRevision])))
+    .digest('base64url').slice(0, 16)
+}
+
+const selectEntrantSubmissionVersions = db.prepare(`
+  SELECT id, state, verdict, progress, score, passed, judged_at AS judgedAt, tests_revision AS testsRevision
+  FROM contest_submissions WHERE contest_id = ? AND entrant_id = ? AND kind = 'entrant'
+  ORDER BY submitted_at DESC, number DESC
+`)
+
+/** No source, compile log or report is read merely to learn whether the person's list changed. */
+export function entrantSubmissionsVersion(contestId: string, entrantId: string): string {
+  return submissionsVersion(selectEntrantSubmissionVersions.all(contestId, entrantId) as SubmissionVersionRow[])
+}
+
 /** A person's submissions of one problem, oldest first: what the rail and the attempts limit read. */
 export function listEntrantProblemSubmissions(contestId: string, problemId: string, entrantId: string): StoredSubmission[] {
   return (selectEntrantProblemSubmissions.all(contestId, problemId, entrantId) as SubmissionRow[]).map(toSubmission)
@@ -1014,7 +1036,9 @@ export interface NewEntrantSubmission {
  * looks and the insert cannot be told apart by a second request.
  */
 export const submitSolution = db.transaction(
-  (input: NewEntrantSubmission, at = Date.now()): { submission: StoredSubmission } | { refusal: 'in_flight' | 'attempts' } => {
+  (input: NewEntrantSubmission, at = Date.now()): { submission: StoredSubmission } | { refusal: 'in_flight' | 'attempts' | 'problem' } => {
+    const problem = getProblem(input.problemId)
+    if (!problem || problem.contestId !== input.contestId || !getContest(input.contestId)) return { refusal: 'problem' }
     if (pendingCount(input.contestId, input.entrantId) >= MAX_PENDING) return { refusal: 'in_flight' }
     if (input.attemptsPerProblem > 0 && !input.late
       && attemptsUsed(input.contestId, input.problemId, input.entrantId) >= input.attemptsPerProblem) {
@@ -1239,6 +1263,19 @@ const markRunning = db.prepare(`
   WHERE id = @id AND state = 'queued'
 `)
 
+/** Settle legacy orphan rows without spending a judging start or a participant's attempt. */
+export const failInvalidQueued = db.transaction((id: string, at = Date.now()): boolean => {
+  const row = selectSubmission.get(id) as SubmissionRow | undefined
+  if (!row || row.state !== 'queued') return false
+  const problem = getProblem(row.problem_id)
+  if (problem && problem.contestId === row.contest_id && getContest(row.contest_id)) return false
+  db.prepare(`UPDATE contest_submissions SET state = 'failed', verdict = 'SE', progress = NULL,
+    system_detail = ?, judged_at = ? WHERE id = ? AND state = 'queued'`)
+    .run(tr('contests.judge.contestGone'), at, id)
+  noteContest(row.contest_id, 'submission', row.entrant_id)
+  return true
+})
+
 /**
  * The submission the judge would take next, or null. `skip` — rows the pump
  * passes over this time (held back while their contest, problem or person is
@@ -1277,6 +1314,7 @@ export interface StartedJudging {
 export const startJudging = db.transaction((id: string, boot: string = BOOT, at: number = Date.now()): StartedJudging | null => {
   const row = selectSubmission.get(id) as SubmissionRow | undefined
   if (!row || row.state !== 'queued') return null
+  if (failInvalidQueued(id, at)) return null
   if (row.entrant_id !== null && selectRunningOfEntrant.get(row.entrant_id)) return null
   const problem = getProblem(row.problem_id)
   if (!problem) return null

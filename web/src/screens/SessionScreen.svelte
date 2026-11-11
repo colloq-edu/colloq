@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Lazy from '@/components/ui/Lazy.svelte'
+  import { loadLocalizedFeature } from '@/lib/screen-language'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   /**
@@ -29,20 +31,20 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Notebook from '@/components/notebook/Notebook.svelte'
   import AiPanel from '@/components/panels/AiPanel.svelte'
-  import BanMenu from '@/components/panels/BanMenu.svelte'
+  import BanMenuLoader from '@/components/panels/BanMenuLoader.svelte'
   import BannedScreen from '@/components/BannedScreen.svelte'
-  import StaffGuestStrip from '@/components/StaffGuestStrip.svelte'
+  const loadStaffGuestStrip = () => import('@/components/StaffGuestStrip.svelte')
   import FilesPanel from '@/components/panels/FilesPanel.svelte'
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
-  import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
-  import PdfReader from '@/components/reader/PdfReader.svelte'
-  import LectureView from '@/components/lecture/LectureView.svelte'
-  import NotesEditor from '@/components/lecture/NotesEditor.svelte'
+  const loadTerminalDrawer = () => import('@/components/panels/TerminalDrawer.svelte')
+  const loadPdfReader = () => import('@/components/reader/PdfReader.svelte')
+  const loadLectureView = () => import('@/components/lecture/LectureView.svelte')
+  const loadNotesEditor = () => import('@/components/lecture/NotesEditor.svelte')
   import { closeNotesEditor, notesEditor } from '@/lib/notes-editor.svelte'
   import { ESCAPE_AGAIN_MS, isClickerReload } from '@/components/lecture/remote'
   import { fullscreenNow, fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
   import { keepAwake } from '@/lib/wakelock'
-  import ImageView from '@/components/reader/ImageView.svelte'
+  const loadImageView = () => import('@/components/reader/ImageView.svelte')
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
   import Wordmark from '@/components/ui/Wordmark.svelte'
   import type { StoredIdentity } from '@/lib/identity'
@@ -85,8 +87,8 @@
   import { accessPatch } from '@/lib/book-access'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
-  import FileEditor from '@/components/editor/FileEditor.svelte'
-  import FileBar from '@/components/editor/FileBar.svelte'
+  const loadFileEditor = () => import('@/components/editor/FileEditor.svelte')
+  const loadFileBar = () => import('@/components/editor/FileBar.svelte')
   import { leaderFor, sameLead, type Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { Tabs } from '@/lib/tabs.svelte'
@@ -101,7 +103,7 @@
     type OracleLimits,
     type RoomRules,
   } from '@shared/rules'
-  import RoomRulesRows from '@/components/RoomRulesRows.svelte'
+  const loadRoomRulesRows = () => import('@/components/RoomRulesRows.svelte')
 
   interface Props {
     session: SessionInfo
@@ -183,7 +185,7 @@
   let pultChunk: Promise<typeof import('@/components/lecture/ConsoleView.svelte').default> | null =
     null
   const consoleView = () =>
-    (pultChunk ??= import('@/components/lecture/ConsoleView.svelte').then((m) => m.default))
+    (pultChunk ??= loadLocalizedFeature(() => import('@/components/lecture/ConsoleView.svelte').then((m) => m.default)))
   /**
    * The council console is a second chunk, by the same argument and at the
    * same price: it is drawn in one window for one person, and it would
@@ -204,7 +206,7 @@
     typeof import('@/components/council/pult/PultWindow.svelte').default
   > | null = null
   const councilWindow = () =>
-    (councilChunk ??= import('@/components/council/pult/PultWindow.svelte').then((m) => m.default))
+    (councilChunk ??= loadLocalizedFeature(() => import('@/components/council/pult/PultWindow.svelte').then((m) => m.default)))
   // Start downloading as soon as the console address is on screen, not when we
   // reach the markup: for a tablet that opened a key link this wins a whole
   // round trip.
@@ -1765,7 +1767,7 @@
     typeof import('@/components/ui/CommandPalette.svelte').default
   > | null = null
   const paletteView = () =>
-    (paletteChunk ??= import('@/components/ui/CommandPalette.svelte').then((m) => m.default))
+    (paletteChunk ??= loadLocalizedFeature(() => import('@/components/ui/CommandPalette.svelte').then((m) => m.default)))
 
   /** The cell's first non-empty line — what it is recognised by in the list. */
   function cellLine(cellId: string): string {
@@ -2161,7 +2163,11 @@
       </div>
     {/if}
     {#if lecture}
+      <Lazy load={loadLectureView}>
+        {#snippet children(LectureView)}
       <LectureView {lecture} role="projection" onleave={fromProjection} />
+        {/snippet}
+      </Lazy>
     {:else}
       <!--
         No lecture yet. That is normal: the projector is switched on before
@@ -2853,7 +2859,14 @@
     inside that block it showed only after the class had ended.
   -->
   {#if staffGuest && !isHost}
-    <StaffGuestStrip guest={staffGuest} sessionId={session.session.id} />
+    <Lazy load={loadStaffGuestStrip}>
+      {#snippet loading()}
+        <div class="h-14 shrink-0 border-b border-line" role="status" aria-label={tr('common.loading')} aria-busy="true"></div>
+      {/snippet}
+      {#snippet children(StaffGuestStrip)}
+        <StaffGuestStrip guest={staffGuest} sessionId={session.session.id} />
+      {/snippet}
+    </Lazy>
   {/if}
 
   <!-- Positioned, so the panel drawers below cover the workspace and stop at
@@ -2897,14 +2910,21 @@
       {/if}
 
       {#if activePath && activeKind === 'text'}
-        <FileBar
-          path={activePath}
-          mayRun={may.run && runnerFor(activePath) !== null}
-          mayEdit={may.files}
-          whyReadOnly={may.filesWhy}
-          refused={activeDoc?.refused ?? false}
-          onrun={() => runFile(activePath)}
-        />
+        <Lazy load={loadFileBar}>
+          {#snippet loading()}
+            <div class="h-[34px] shrink-0 border-b border-line" role="status" aria-label={tr('common.loading')} aria-busy="true"></div>
+          {/snippet}
+          {#snippet children(FileBar)}
+            <FileBar
+              path={activePath}
+              mayRun={may.run && runnerFor(activePath) !== null}
+              mayEdit={may.files}
+              whyReadOnly={may.filesWhy}
+              refused={activeDoc?.refused ?? false}
+              onrun={() => runFile(activePath)}
+            />
+          {/snippet}
+        </Lazy>
       {/if}
 
       <!--
@@ -2999,12 +3019,16 @@
         </div>
       {:else if activeKind === 'pdf'}
         {#if lecture && lectureHere && !soloRead}
+          <Lazy load={loadLectureView}>
+            {#snippet children(LectureView)}
           <LectureView
             {lecture}
             role={leading ? 'presenter' : session.me.role === 'host' ? 'cohost' : 'audience'}
             onproject={toProjection}
             onsolo={leading ? undefined : () => (soloRead = true)}
           />
+            {/snippet}
+          </Lazy>
         {:else}
           {#if may.board && lecture === null && activePath !== session.board}
             <!--
@@ -3053,6 +3077,8 @@
             was looking at the same wrong document.
           -->
           {#key activePath}
+            <Lazy load={loadPdfReader}>
+              {#snippet children(PdfReader)}
             <PdfReader
               file={activePath}
               shared={activePath === session.board}
@@ -3064,6 +3090,8 @@
               bind:pages={readerPages}
               bind:following={readerFollowing}
             />
+              {/snippet}
+            </Lazy>
           {/key}
         {/if}
       {:else if activePath && activeKind === 'text'}
@@ -3079,11 +3107,15 @@
           </div>
         {:else if activeDoc}
           {#key activePath}
+            <Lazy load={loadFileEditor}>
+              {#snippet children(FileEditor)}
             <FileEditor
               file={activeDoc}
               readOnly={!may.files || activeDoc.refused}
               onrun={runnerFor(activePath) && may.run ? () => runFile(activePath) : null}
             />
+              {/snippet}
+            </Lazy>
           {/key}
         {:else}
           <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted"> {tr('room.ui.107')} {baseOf(activePath)}…
@@ -3092,7 +3124,11 @@
       {:else if activePath && activeKind === 'image'}
         <!-- An image is looked at, not edited. Downloading is in the tree,
              where it is for all the other files. -->
+        <Lazy load={loadImageView}>
+          {#snippet children(ImageView)}
         <ImageView path={activePath} />
+          {/snippet}
+        </Lazy>
       {:else if activePath && activeKind !== 'notebook'}
         <!--
           The notebook does not get here: it is drawn above, in its own `main`.
@@ -3106,7 +3142,11 @@
       {/if}
 
       {#if terminalOpen}
+        <Lazy load={loadTerminalDrawer}>
+          {#snippet children(TerminalDrawer)}
         <TerminalDrawer bind:tab={drawerTab} onclose={() => (terminalOpen = false)} />
+          {/snippet}
+        </Lazy>
       {/if}
     </div>
 
@@ -3233,7 +3273,7 @@
      the presenter: for a student it would open nothing, and drawn it would
      lie. -->
 {#if isHost && !session.gone && session.banned === null}
-  <BanMenu />
+  <BanMenuLoader />
 {/if}
 
 <!--
@@ -3258,7 +3298,11 @@
   -->
   {@const editing = notesEditor()!}
   {#key editing.file}
+    <Lazy load={loadNotesEditor}>
+      {#snippet children(NotesEditor)}
     <NotesEditor file={editing.file} page={editing.page} onclose={closeNotesEditor} />
+      {/snippet}
+    </Lazy>
   {/key}
 {/if}
 
@@ -3448,6 +3492,8 @@
     <!-- The LIST scrolls, not the whole sheet: the title and "End class" under
          it must stay in view. -->
     <div class="min-h-0 flex-1 overflow-y-auto px-4 sm:max-h-[min(60vh,32rem)]">
+      <Lazy load={loadRoomRulesRows}>
+        {#snippet children(RoomRulesRows)}
       <RoomRulesRows
         rules={roomRules}
         busy={rulesBusy}
@@ -3455,6 +3501,8 @@
         ownKernels={session.ownKernels}
         onchange={setRule}
       />
+        {/snippet}
+      </Lazy>
     </div>
     <!--
       The end of class — here, under the rules, not as an eighth row among

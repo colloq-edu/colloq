@@ -218,7 +218,7 @@ function adminTests(problem: ContestProblem, tests: readonly ContestTest[]): Adm
   }))
 }
 
-function problemView(problem: ContestProblem): ProblemView {
+async function problemView(problem: ContestProblem): Promise<ProblemView> {
   const tests = listTests(problem.id)
   const groups = listGroups(problem.id)
   return {
@@ -229,7 +229,7 @@ function problemView(problem: ContestProblem): ProblemView {
     // The points the groups add up to, whatever the rules: the editor shows what IOI would give.
     maxScore: problemMaxPoints(pointGroups(tests, problem.points, groups)),
     testBytes: tests.reduce((sum, test) => sum + test.inputBytes + (test.answerBytes ?? 0), 0),
-    reference: referenceStatus(problem),
+    reference: await referenceStatus(problem),
     missingAnswers: tests.filter((test) => test.answerBytes === null).length,
     answersRunning: teacherRunPending(problem.id, 'answers'),
   }
@@ -240,18 +240,18 @@ async function viewOf(contest: Contest, viewer: StaffLike | null): Promise<Conte
   return {
     contest,
     phase: contestPhase(contest, Date.now()),
-    problems: listProblems(contest.id).map(problemView),
+    problems: await Promise.all(listProblems(contest.id).map(problemView)),
     languages: await languageOptions(contest.environment),
     course: courseRefOf(contest.courseId, viewer),
     timeZone: instanceTimeZone(),
-    readiness: await contestReadiness(contest),
+    readiness: await contestReadiness(contest, Date.now(), false),
     entrants: counts.entrants,
     submissions: counts.submissions,
     judge: judgeStatus(),
   }
 }
 
-function rowOf(contest: Contest, viewer: StaffLike | null): ContestListRow {
+async function rowOf(contest: Contest, viewer: StaffLike | null): Promise<ContestListRow> {
   const counts = contestCounts(contest.id)
   const board = contestBoard(contest, { entrantId: null, staff: true })
   const icpc = contest.rules === 'icpc'
@@ -266,7 +266,7 @@ function rowOf(contest: Contest, viewer: StaffLike | null): ContestListRow {
     submissions: counts.submissions,
     averageSolved: average === null ? null : Math.round(average * 10) / 10,
     averageOf: icpc ? board.problems.length : board.problems.reduce((sum, problem) => sum + problem.maxScore, 0),
-    notReady: problemsNotReady(contest),
+    notReady: await problemsNotReady(contest),
     course: courseRefOf(contest.courseId, viewer),
   }
 }
@@ -732,10 +732,10 @@ export function adminContestRoutes(): Router {
 
   /* ------------------------------------------------------------ contests */
 
-  router.get('/api/admin/contests', requireStaff, (req, res) => {
+  router.get('/api/admin/contests', requireStaff, async (req, res) => {
     const staff = currentStaff(req)
     reply<ContestList>(res, {
-      contests: listContests().filter((contest) => canSeeContest(staff, contest)).map((contest) => rowOf(contest, staff)),
+      contests: await Promise.all(listContests().filter((contest) => canSeeContest(staff, contest)).map((contest) => rowOf(contest, staff))),
       judge: judgeStatus(),
     })
   })
@@ -903,7 +903,7 @@ export function adminContestRoutes(): Router {
 
   /* ------------------------------------------------------------ problems */
 
-  router.post('/api/admin/contests/:id/problems', requireStaff, (req, res) => {
+  router.post('/api/admin/contests/:id/problems', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const parsed = parseProblemPatch(req.body)
@@ -911,7 +911,7 @@ export function adminContestRoutes(): Router {
     const made = addProblem(contest.id, parsed.fields)
     if (made === 'full') return fail(res, 409, 'invalid', tr('contests.refusal.problemsFull'))
     res.status(201)
-    reply<ProblemView>(res, problemView(made))
+    reply<ProblemView>(res, await problemView(made))
   })
 
   router.put('/api/admin/contests/:id/problems/order', requireStaff, async (req, res) => {
@@ -930,7 +930,7 @@ export function adminContestRoutes(): Router {
    * its groups. Its reference is checked afresh: the check belongs to the
    * problem it ran for.
    */
-  router.post('/api/admin/contests/:id/problems/copy', requireStaff, (req, res) => {
+  router.post('/api/admin/contests/:id/problems/copy', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const source = getProblem(String((req.body as { fromProblemId?: unknown } | undefined)?.fromProblemId ?? ''))
@@ -958,7 +958,7 @@ export function adminContestRoutes(): Router {
     replaceGroups(made.id, listGroups(source.id))
     if (tests.length > 0) audit(req, 'contest.problem.tests', contest, { problem: problemLetter(made.position), change: 'copy', tests: tests.length })
     res.status(201)
-    reply<ProblemView>(res, problemView(getProblem(made.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(made.id)!))
   })
 
   /**
@@ -1009,10 +1009,10 @@ export function adminContestRoutes(): Router {
     }
     audit(req, 'contest.problem.tests', fresh, { problem: problemLetter(made.position), change: 'import', tests: parsed.tests.tests.length })
     res.status(201)
-    reply<ProblemView>(res, problemView(getProblem(made.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(made.id)!))
   })
 
-  router.patch('/api/admin/contests/:id/problems/:pid', requireStaff, (req, res) => {
+  router.patch('/api/admin/contests/:id/problems/:pid', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1023,7 +1023,7 @@ export function adminContestRoutes(): Router {
     if (!saved) return fail(res, 404, 'not_found', tr('contests.refusal.noProblem'))
     // A switch between points per test and per group gives every judged submission its points anew.
     if (parsed.fields.points !== undefined && parsed.fields.points !== problem.points) rescoreIfIoi(contest, problem.id)
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   router.delete('/api/admin/contests/:id/problems/:pid', requireStaff, async (req, res) => {
@@ -1077,7 +1077,7 @@ export function adminContestRoutes(): Router {
     if (!tryChangeTests(res, problem, next)) return
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: mode === 'append' ? 'archive-append' : 'archive', tests: plan.tests.length })
     reply<ArchiveImport>(res, {
-      problem: problemView(getProblem(problem.id)!),
+      problem: await problemView(getProblem(problem.id)!),
       added: plan.tests.length,
       withoutAnswers: plan.tests.filter((test) => test.answer === null).length,
       skipped,
@@ -1085,7 +1085,7 @@ export function adminContestRoutes(): Router {
   })
 
   /** One test typed in by hand, at the end. Its answer may wait for the reference. */
-  router.post('/api/admin/contests/:id/problems/:pid/tests', requireStaff, (req, res) => {
+  router.post('/api/admin/contests/:id/problems/:pid/tests', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1110,22 +1110,22 @@ export function adminContestRoutes(): Router {
     if (!tryChangeTests(res, problem, next)) return
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: 'add' })
     res.status(201)
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /** Every test of the problem goes (a new, empty revision). */
-  router.delete('/api/admin/contests/:id/problems/:pid/tests', requireStaff, (req, res) => {
+  router.delete('/api/admin/contests/:id/problems/:pid/tests', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
     if (!problem) return
     if (!tryChangeTests(res, problem, [])) return
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: 'clear' })
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /** A test's marks — example, group — or its place (`ordinal`; the others shift). */
-  router.patch('/api/admin/contests/:id/problems/:pid/tests/:n', requireStaff, (req, res) => {
+  router.patch('/api/admin/contests/:id/problems/:pid/tests/:n', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1153,10 +1153,10 @@ export function adminContestRoutes(): Router {
     }
     if (!tryChangeTests(res, problem, next)) return
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: 'edit', test: tests[index].ordinal })
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
-  router.delete('/api/admin/contests/:id/problems/:pid/tests/:n', requireStaff, (req, res) => {
+  router.delete('/api/admin/contests/:id/problems/:pid/tests/:n', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1168,7 +1168,7 @@ export function adminContestRoutes(): Router {
     next.splice(index, 1)
     if (!tryChangeTests(res, problem, next)) return
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: 'delete', test: tests[index].ordinal })
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /** A test's input or answer, whole, as a text file for the teacher: kept by no cache on the way. */
@@ -1201,7 +1201,7 @@ export function adminContestRoutes(): Router {
   }
 
   /** The IOI groups' table, as a whole; the judged submissions get their points anew from their verdicts. */
-  router.put('/api/admin/contests/:id/problems/:pid/groups', requireStaff, (req, res) => {
+  router.put('/api/admin/contests/:id/problems/:pid/groups', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1219,7 +1219,7 @@ export function adminContestRoutes(): Router {
     }
     replaceGroups(problem.id, groups)
     rescoreIfIoi(contest, problem.id)
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /* ----------------------------------------------------------- reference */
@@ -1247,18 +1247,18 @@ export function adminContestRoutes(): Router {
     return false
   }
 
-  router.post('/api/admin/contests/:id/problems/:pid/reference/check', requireStaff, (req, res) => {
+  router.post('/api/admin/contests/:id/problems/:pid/reference/check', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
     if (!problem || teacherRunRefusal(res, problem, 'reference')) return
     enqueueTeacherRun(problem, 'reference')
     wakeContestJudge()
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /** «Ответы из эталона»: the reference runs on every test and its outputs become the missing answers. */
-  router.post('/api/admin/contests/:id/problems/:pid/reference/answers', requireStaff, (req, res) => {
+  router.post('/api/admin/contests/:id/problems/:pid/reference/answers', requireStaff, async (req, res) => {
     const contest = contestOf(req, res)
     if (!contest) return
     const problem = problemFor(contest, req, res)
@@ -1266,7 +1266,7 @@ export function adminContestRoutes(): Router {
     enqueueTeacherRun(problem, 'answers')
     audit(req, 'contest.problem.tests', contest, { problem: problemLetter(problem.position), change: 'answers' })
     wakeContestJudge()
-    reply<ProblemView>(res, problemView(getProblem(problem.id)!))
+    reply<ProblemView>(res, await problemView(getProblem(problem.id)!))
   })
 
   /** Judge again a problem's judged submissions, or `{stale: true}` — only those judged on older tests. */
