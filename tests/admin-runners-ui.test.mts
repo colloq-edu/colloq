@@ -250,7 +250,9 @@ test('a machine page and the machines block are addresses the admin router reads
   assert.equal(pattern.exec(machinePagePath('vastroaa'))?.[1], 'vastroaa')
   assert.equal(pattern.exec('/admin/resources'), null)
   // Under the resources tab, so the rail keeps «Ресурсы» lit on the machine's page.
-  assert.match(flat(screen), /\{:else if tab === 'resources'\} \{#if openMachine\} \{#key openMachine\}<RemoteMachine id=\{openMachine\} \{navigate\} \/>\{\/key\} \{:else\} <ResourcesTab \{navigate\} \/> \{\/if\}/)
+  assert.match(flat(screen), /\{:else if tab === 'resources'\} \{#if openMachine\} \{#key openMachine\}<Lazy load=\{loadRemoteMachine\}>\{#snippet children\(RemoteMachine\)\}<RemoteMachine id=\{openMachine\} \{navigate\} \/>\{\/snippet\}<\/Lazy>\{\/key\} \{:else\} <Lazy load=\{loadResourcesTab\}> \{#snippet children\(ResourcesTab\)\} <ResourcesTab \{navigate\} \/> \{\/snippet\} <\/Lazy> \{\/if\}/)
+  assert.match(screen, /const loadRemoteMachine = \(\) => import\('@\/admin\/screens\/RemoteMachine\.svelte'\)/)
+  assert.match(screen, /const loadResourcesTab = \(\) => import\('@\/admin\/screens\/ResourcesTab\.svelte'\)/)
 })
 
 /* ---------------------------------------------------------------- the chip */

@@ -38,19 +38,19 @@ test('one character past the budget is truncation at last, and it is announced',
   const outputs = buffer.snapshot()
 
   assert.ok(truncationNotice(outputs), 'truncated silently')
-  const body = outputs.filter((o) => o.kind === 'stream' && !/остановлен после/.test(o.text))
-  const total = body.reduce((sum, o) => sum + (o.kind === 'stream' ? o.text.length : 0), 0)
-  assert.equal(total, MAX_ATTEMPT_OUTPUT_CHARS, 'extra text leaked past the ceiling')
+  const total = outputs.reduce((sum, o) => sum + (o.kind === 'stream' ? o.text.length : 0), 0)
+  assert.equal(total, MAX_ATTEMPT_OUTPUT_CHARS, 'text and the diagnostic share the same ceiling')
 })
 
-test('text one character longer than the budget is cut exactly at it', () => {
+test('text one character longer than the budget makes room for its notice', () => {
   const buffer = new CouncilOutputBuffer()
   buffer.stream('stdout', 'a'.repeat(MAX_ATTEMPT_OUTPUT_CHARS + 1))
   const outputs = buffer.snapshot()
 
   assert.ok(truncationNotice(outputs), 'there was truncation but no warning')
   assert.ok(outputs[0].kind === 'stream')
-  assert.equal(outputs[0].text.length, MAX_ATTEMPT_OUTPUT_CHARS)
+  const total = outputs.reduce((sum, o) => sum + (o.kind === 'stream' ? o.text.length : 0), 0)
+  assert.equal(total, MAX_ATTEMPT_OUTPUT_CHARS)
 })
 
 test('an ordinary attempt loses nothing', () => {

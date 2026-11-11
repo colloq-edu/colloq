@@ -23,6 +23,7 @@ import { FRAME_HTML, frameOrigin, framePolicy } from '../server/src/plotly-frame
 import { CONTENT_SECURITY_POLICY } from '../server/src/headers.js'
 import {
   PLOTLY_BUNDLE_PATH,
+  PLOTLY_MODULE_PATH,
   PLOTLY_FRAME_PATH,
   PLOTLY_MSG,
   PLOTLY_ORIGIN_PARAM,
@@ -53,11 +54,11 @@ test('the frame origin is opaque, and the header does that, not the attribute', 
   assert.ok(!/allow-same-origin/.test(directives.get('sandbox')!))
 })
 
-test('exactly two scripts: our loader by hash and the bundle by exact address', () => {
+test('scripts are limited to our hashed loader and generated Plotly modules', () => {
   const scripts = directives.get('script-src')!.split(' ')
   assert.equal(scripts.length, 2, `script-src has ${scripts.length} sources: ${scripts.join(' ')}`)
   assert.match(scripts[0], /^'sha256-[A-Za-z0-9+/=]+'$/, 'the loader is not allowed by hash')
-  assert.equal(scripts[1], `${ORIGIN}${PLOTLY_BUNDLE_PATH}`)
+  assert.equal(scripts[1], `${ORIGIN}${PLOTLY_MODULE_PATH}`)
   /*
    * `'self'` is absent on purpose. In the sandbox the origin is opaque, so the
    * word has nothing to rest on — and where it does match after all (Chrome

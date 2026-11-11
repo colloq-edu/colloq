@@ -49,14 +49,15 @@ already fall back to system fonts.
 6.2.108 by `npm run pdf:worker` (Copyright Mozilla Foundation). The file keeps
 its license header. License: <https://www.apache.org/licenses/LICENSE-2.0>.
 
-### plotly.js strict bundle: MIT
+### plotly.js strict modules: MIT
 
-`web/public/plotly/plotly.min.js` is copied unmodified from
-`plotly.js-strict-dist-min` 4.1.1 by `npm run plotly:dist` (Copyright Plotly,
-Inc.) and keeps its license header. It is **not** committed — the copy step runs
-on every build, and the file is ignored in `.gitignore`. The strict bundle is the
-one without function constructors, so the sandboxed frame that renders a figure
-needs no `unsafe-eval` in its policy (`server/src/plotly-frame.ts`).
+`web/public/plotly/` is built from `plotly.js` 4.1.1 by `npm run plotly:dist`
+(Copyright Plotly, Inc.). The generated entry and modules preserve the complete
+upstream strict trace inventory. The entry includes the upstream MIT notice,
+and the complete license is also emitted as `plotly/LICENSE`. Generated files are not
+committed; the build runs on every web build. Strict trace variants avoid
+function constructors, so the sandboxed figure frame needs no `unsafe-eval`
+in its policy (`server/src/plotly-frame.ts`).
 
 ## Components shipped in builds under non-MIT licenses
 

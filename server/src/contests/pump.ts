@@ -55,6 +55,7 @@ import {
   BOOT,
   enqueueTeacherRun,
   finishJudging,
+  failInvalidQueued,
   getContest,
   getProblem,
   judgedSince,
@@ -103,6 +104,29 @@ export function kernelImage(environment: string): string {
   return `colloq-kernel:${environment}`
 }
 
+const IMAGE_TTL_MS = 10_000
+const images = new WeakMap<ContestJudge, Map<string, { at: number; value: string | null; pending: Promise<string | null> | null }>>()
+
+/** Passive editor status is cached briefly; admission/opening and every judging resolve afresh. */
+export async function environmentImage(environment: string, fresh = false, judge = currentJudge()): Promise<string | null> {
+  if (!judge) return null
+  let byImage = images.get(judge)
+  if (!byImage) { byImage = new Map(); images.set(judge, byImage) }
+  const tag = kernelImage(environment)
+  const cached = byImage.get(tag)
+  if (cached?.pending) return cached.pending
+  if (!fresh && cached && Date.now() - cached.at < IMAGE_TTL_MS) return cached.value
+  const entry = { at: Date.now(), value: null as string | null, pending: null as Promise<string | null> | null }
+  entry.pending = judge.resolveImage(tag).catch(() => null).then((value) => {
+    entry.value = value
+    entry.at = Date.now()
+    entry.pending = null
+    return value
+  })
+  byImage.set(tag, entry)
+  return entry.pending
+}
+
 /* ------------------------------------------------------------ languages */
 
 /*
@@ -125,10 +149,11 @@ interface ProbeEntry {
 const probes = new WeakMap<ContestJudge, Map<string, ProbeEntry>>()
 
 /** What the environment's image can run; null — no judge here, or the probe failed. */
-export async function imageLanguages(environment: string, now = Date.now()): Promise<LanguageProbe | null> {
+export async function imageLanguages(environment: string, now = Date.now(), resolved?: string): Promise<LanguageProbe | null> {
   const judge = currentJudge()
   if (!judge) return null
-  const image = kernelImage(environment)
+  const image = resolved ?? await environmentImage(environment, false, judge)
+  if (!image) return null
   let byImage = probes.get(judge)
   if (!byImage) {
     byImage = new Map()
@@ -157,7 +182,7 @@ export async function imageLanguages(environment: string, now = Date.now()): Pro
 /** Forget what the images were found to run — after an image was rebuilt, and in tests. */
 export function forgetLanguageProbes(): void {
   const judge = currentJudge()
-  if (judge) probes.delete(judge)
+  if (judge) { probes.delete(judge); images.delete(judge) }
 }
 
 /** A probe of nothing: what an image is said to run when it could not be asked. */
@@ -283,6 +308,7 @@ export function pumpContestJudge(): number {
       skip.push(next.id)
       continue
     }
+    if (failInvalidQueued(next.id)) continue
     const problem = getProblem(next.problemId)
     // A run that writes the answers carries none; every other one carries them all.
     const answersMb = next.kind === 'answers' ? 0 : answersMbOf(problem?.id)
@@ -303,7 +329,8 @@ export function pumpContestJudge(): number {
     const taken = startJudging(next.id, BOOT)
     if (!taken) {
       release()
-      break
+      skip.push(next.id)
+      continue
     }
     warned = ''
     admittedMb += wantMb
@@ -362,9 +389,13 @@ async function judgeOne(judge: ContestJudge, taken: StartedJudging, signal: Abor
   const contest = getContest(submission.contestId)
   const revision = submission.testsRevision ?? problem.testsRevision
   const mode: JudgeMode = submission.kind === 'answers' ? 'answers' : contest?.rules === 'ioi' ? 'ioi' : 'icpc'
+  let environment: { name: string; image: string } | undefined
   let outcome: JudgeOutcome
   try {
     if (!contest) throw new NotJudgeable(tr('contests.judge.contestGone'))
+    const image = await environmentImage(contest.environment, true, judge)
+    if (!image) throw new NotJudgeable(tr('contests.readiness.imageUnknown', { image: kernelImage(contest.environment) }))
+    environment = { name: contest.environment, image }
     if (tests.length === 0 || !revisionExists(problem.contestId, problem.id, revision)) {
       throw new NotJudgeable(tr('contests.judge.noTests'))
     }
@@ -379,10 +410,12 @@ async function judgeOne(judge: ContestJudge, taken: StartedJudging, signal: Abor
     if (signal.aborted) throw new NotJudgeable(tr('contests.judge.stopped'))
     prepareRunsDir(problem.contestId)
     let lastProgress = 0
+    const effectiveGroups = new Map(pointGroups(tests, problem.points, taken.groups)
+      .flatMap((group) => group.tests.map((ordinal) => [ordinal, group.group] as const)))
     const request: JudgeRequest = {
       submissionId: submission.id,
       container: `colloq-contest-${submission.id}-${submission.attempt}`,
-      image: kernelImage(contest.environment),
+      image,
       language: submission.language,
       source: submission.source,
       timeLimitMs: problem.timeLimitMs,
@@ -395,7 +428,8 @@ async function judgeOne(judge: ContestJudge, taken: StartedJudging, signal: Abor
        */
       testsDir: inputsDir(problem.contestId, problem.id, revision),
       jobDir: jobDir(problem.contestId, submission.id, submission.attempt),
-      tests: tests.map((test, index) => ({ ordinal: test.ordinal, sample: test.sample, group: test.group, answer: answers[index] })),
+      tests: tests.map((test, index) => ({ ordinal: test.ordinal, sample: test.sample,
+        group: mode === 'ioi' ? effectiveGroups.get(test.ordinal)! : test.group, answer: answers[index] })),
       mode,
       checker: {
         kind: problem.checker,
@@ -420,7 +454,9 @@ async function judgeOne(judge: ContestJudge, taken: StartedJudging, signal: Abor
   } finally {
     removeJobDir(problem.contestId, submission.id, submission.attempt)
   }
-  record(taken, contest, revision, mode, outcome)
+  // A rebuild may have completed while the reference ran. Its first displayed status must resolve again.
+  if (submission.kind === 'reference' && contest) images.get(judge)?.delete(kernelImage(contest.environment))
+  record(taken, contest, revision, mode, outcome, environment)
 }
 
 /** A compiler's log cut where the shared cap says, on a character boundary. */
@@ -438,7 +474,7 @@ function cutLog(log: string): string {
  * the answer too (what anyone opens a report for); the doors decide who
  * reads what of it (routes/contests.ts gives a participant the examples only).
  */
-function record(taken: StartedJudging, contest: Contest | null, revision: number, mode: JudgeMode, judged: JudgeOutcome): void {
+function record(taken: StartedJudging, contest: Contest | null, revision: number, mode: JudgeMode, judged: JudgeOutcome, environment?: { name: string; image: string }): void {
   const { submission, problem, tests, groups } = taken
   let outcome = judged
   // Only the run that still owns its row writes answers: one requeued by a shutdown is judged again.
@@ -485,7 +521,7 @@ function record(taken: StartedJudging, contest: Contest | null, revision: number
     timeMs: outcome.timeMs,
     memoryKb: outcome.memoryKb,
     compileLog: cutLog(outcome.compileLog),
-    report: { tests: report, ...(stamp ? { stamp } : {}) },
+    report: { tests: report, ...(stamp ? { stamp, environment } : {}) },
     systemDetail: outcome.verdict === 'SE' ? outcome.systemDetail ?? tr('contests.judge.unknown') : null,
     judgedAt: Date.now(),
   })

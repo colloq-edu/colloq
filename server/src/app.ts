@@ -19,6 +19,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { preferredEncodings, type Encoding } from './http-encoding.js'
 import { precompressedStatic } from './precompressed-static.js'
+import { isPlotlyModulePath, PLOTLY_BUNDLE_PATH } from '@shared/plotly'
 import { etagMatches, frontendPage } from './frontend-html.js'
 import { competitionCardOf, competitionsCardOf, contestCardOf, courseCardOf, linkPreview } from './link-preview.js'
 import { competitionCardPng, competitionsCardPng, contestCardPng, courseCardPng, roomCardPng } from './og-card.js'
@@ -886,12 +887,17 @@ if (config.staticDir) {
           return
         }
         const relative = path.relative(staticDir, filePath)
-        const versioned = relative.startsWith(`assets${path.sep}`)
+        const publicPath = '/' + relative.split(path.sep).join('/')
+        if (isPlotlyModulePath(publicPath)) {
+          res.setHeader('Access-Control-Allow-Origin', '*')
+        }
+        const versioned = relative.startsWith(`assets${path.sep}`) || publicPath.startsWith('/plotly/chunks/')
         // A returning student re-validated every file before this; now the only
         // request a warm cache makes is for index.html.
         res.setHeader(
           'Cache-Control',
-          versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+          publicPath === PLOTLY_BUNDLE_PATH ? 'no-cache'
+            : versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
         )
       },
     }),

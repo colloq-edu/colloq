@@ -32,6 +32,9 @@ const deep=`(selector)=>{
 
 test('an output cannot move or cover the element it is drawn in',async({page})=>{
  await enter(page,'browser-output-host')
+ // The editor is ready before optional rich output. Assert the real output
+ // hosts have arrived before checking that their styles cannot escape.
+ await expect(page.locator('[data-cell-id] div[style*="contain"]')).toHaveCount(5)
  const hosts=await page.evaluate(()=>Array.from(document.querySelectorAll<HTMLElement>('[data-cell-id] div[style*="contain"]'),host=>{
   const box=host.getBoundingClientRect(),cell=host.closest('[data-cell-id]')!.getBoundingClientRect()
   return {position:getComputedStyle(host).position,inCell:box.top>=cell.top&&box.left>=cell.left,covers:box.width>=innerWidth&&box.height>=innerHeight}

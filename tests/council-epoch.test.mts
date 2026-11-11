@@ -1031,6 +1031,103 @@ test('a view numpy would copy in band travels out of band: as a view of its owne
     assert.deepEqual(out.seen, [7, [1, true]])
   })
 
+test('numeric pandas blocks preserve their shared owner before protocol 5 can eagerly copy views',
+  { skip: noPython || noNumeric }, () => {
+    const root = scratch()
+    const { reports, after } = notebook([
+      'import numpy as np, pandas as pd',
+      "if int(pd.__version__.split('.')[0]) < 3: pd.options.mode.copy_on_write = True",
+      "frame = pd.DataFrame(np.arange(200000.0).reshape(25000, 8), columns=list('abcdefgh'))",
+      'train = frame.iloc[:20000]',
+      'test = frame.iloc[20000:]',
+    ].join('\n'), [{ seq: 1, mainRuns: 1, dir: path.join(root, 'e1'), budgetBytes: 2 * MiB }],
+    "[__import__('sys').modules['_colloq_council']._eager_pandas_copies, bool(np.shares_memory(frame._mgr.blocks[0].values, train._mgr.blocks[0].values))]",
+    [
+      'from pandas.core.internals.blocks import Block',
+      'm._eager_pandas_copies = 0',
+      'saved = Block.__reduce_ex__',
+      'def watched(self, protocol):',
+      '    values = self.values',
+      '    if protocol >= 5 and not (values.flags.c_contiguous or values.flags.f_contiguous):',
+      '        m._eager_pandas_copies += 1',
+      '    return saved(self, protocol)',
+      // Block is a Python class over the Cython reducer; restore is unnecessary
+      // because this disposable notebook process exits immediately afterwards.
+      'Block.__reduce_ex__ = watched',
+    ].join('\n'))
+    const report = reports[0]
+    assert.equal(report.ok, true, report.error ?? undefined)
+    assert.deepEqual(report.left, [], 'shared slices must not consume a second table-sized admission budget')
+    assert.deepEqual(after, [0, true], 'the exporter must reach the original views without an eager pandas copy')
+    assert.deepEqual(report.buffers.map(file => file.bytes), [200000 * 8])
+    const cas = path.join(root, 'cas')
+    collect(path.join(root, 'e1'), cas)
+    const loaded = worker({ report, dir: cas, probe: '[bool(np.shares_memory(frame._mgr.blocks[0].values, train._mgr.blocks[0].values)), bool(np.shares_memory(frame._mgr.blocks[0].values, test._mgr.blocks[0].values)), float(test["a"].iloc[0]), frame._mgr.blocks[0].refs is train._mgr.blocks[0].refs, train._mgr.blocks[0].refs is test._mgr.blocks[0].refs]' })
+    assert.equal(loaded.seed.ok, true, loaded.seed.error)
+    assert.deepEqual(loaded.after, [true, true, 160000, true, true])
+    const mutated = worker({ report, dir: cas, attempts: [{ bare: true, source: [
+      'import sys',
+      "seen = sys.modules['_probe'].seen",
+      'train.iloc[0, 0] = -123.',
+      'seen.append(float(frame.iloc[0, 0]))',
+      'frame.iloc[-1, 0] = -456.',
+      'seen.append(float(test.iloc[-1, 0]))',
+      'test.iloc[0, 0] = -789.',
+      'seen.append(float(frame.iloc[20000, 0]))',
+    ].join('\n') }] })
+    assert.equal(mutated.seed.ok, true, mutated.seed.error)
+    assert.deepEqual(mutated.seen, [0, 199992, 160000], 'shared mapped blocks must preserve pandas Copy-on-Write in both directions')
+  })
+
+test('equal pandas buffers retain independent Copy-on-Write reference groups',
+  { skip: noPython || noNumeric }, () => {
+    const { report, cas } = epochOf([
+      'import numpy as np, pandas as pd',
+      'left = pd.DataFrame(np.arange(20000.0).reshape(10000, 2))',
+      'right = pd.DataFrame(np.arange(20000.0).reshape(10000, 2))',
+    ].join('\n'))
+    assert.deepEqual(report.left, [])
+    assert.deepEqual(report.buffers.map(file => file.bytes), [20000 * 8], 'equal content has one file, even for different owners')
+    const loaded = worker({ report, dir: cas, attempts: [{ bare: true, source: [
+      'import sys',
+      "seen = sys.modules['_probe'].seen",
+      'seen.append(left._mgr.blocks[0].refs is right._mgr.blocks[0].refs)',
+      'seen.append([left._mgr.blocks[0].refs.has_reference(), right._mgr.blocks[0].refs.has_reference()])',
+      'left.iloc[0, 0] = -123.',
+      'seen.append(float(right.iloc[0, 0]))',
+    ].join('\n') }] })
+    assert.equal(loaded.seed.ok, true, loaded.seed.error)
+    assert.deepEqual(loaded.seen, [false, [false, false], 0])
+  })
+
+test('pandas epochs preserve optional Copy-on-Write settings and source alias semantics',
+  { skip: noPython || noNumeric }, () => {
+    const { report, cas } = epochOf([
+      'import numpy as np, pandas as pd',
+      "optional_cow = int(pd.__version__.split('.')[0]) < 3",
+      'if optional_cow: pd.options.mode.copy_on_write = False',
+      // Observe the original graph directly; pandas 2 with CoW off aliases,
+      // whereas pandas 3 always isolates, regardless of its obsolete option.
+      'control = pd.DataFrame(np.arange(12.0).reshape(6, 2))',
+      'control_slice = control.iloc[:3]',
+      'control_slice.iloc[0, 0] = -123.',
+      'expected = float(control.iloc[0, 0])',
+      'del control, control_slice',
+      'frame = pd.DataFrame(np.arange(20000.0).reshape(10000, 2))',
+      'train = frame.iloc[:9000]',
+    ].join('\n'))
+    assert.deepEqual(report.left, [])
+    const loaded = worker({ report, dir: cas, attempts: [{ bare: true, source: [
+      'import sys',
+      "seen = sys.modules['_probe'].seen",
+      'seen.append(not optional_cow or not pd.options.mode.copy_on_write)',
+      'train.iloc[0, 0] = -123.',
+      'seen.append(float(frame.iloc[0, 0]) == expected)',
+    ].join('\n') }] })
+    assert.equal(loaded.seed.ok, true, loaded.seed.error)
+    assert.deepEqual(loaded.seen, [true, true])
+  })
+
 test('an export runs under an address-space ceiling of its own, and an in-band copy that cannot fit is refused before it is made',
   { skip: noPython || noNumeric }, () => {
     const root = scratch()
@@ -1094,7 +1191,9 @@ test('torch\'s CPU storages travel out of band, and an optimizer costs only its 
       'opt = torch.optim.Adam(model.parameters())',
       'model(torch.ones(1, 256)).sum().backward()',
       'opt.step()',
-      'was = float(model.weight.sum())',
+      // Workers use fewer CPU threads; float32 reduction order can change a
+      // sum by several ULPs even when every weight is bit-for-bit identical.
+      'was = __import__("hashlib").sha256(model.weight.detach().numpy().tobytes()).hexdigest()',
     ].join('\n')
     // The weights once, their two moments once each: the budget holds them, and nothing of the weights twice.
     const { report, cas } = epochOf(setup, { budgetBytes: MiB })
@@ -1103,7 +1202,7 @@ test('torch\'s CPU storages travel out of band, and an optimizer costs only its 
     assert.deepEqual(report.buffers.map((file) => file.bytes), [262144, 262144, 262144])
     const out = worker({
       report, dir: cas,
-      probe: "[opt.param_groups[0]['params'][0] is model.weight, abs(float(model.weight.sum()) - was) < 1e-6, "
+      probe: "[opt.param_groups[0]['params'][0] is model.weight, __import__('hashlib').sha256(model.weight.detach().numpy().tobytes()).hexdigest() == was, "
         + "sorted(opt.state[model.weight]), float(opt.state[model.weight]['exp_avg'].abs().sum()) > 0]",
     })
     assert.equal(out.seed.ok, true, out.seed.error)

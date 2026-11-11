@@ -1,22 +1,23 @@
 <script lang="ts">
+  import Lazy from '@/components/ui/Lazy.svelte'
   import Splash from '@/components/ui/Splash.svelte'
   import { firstScreenReady } from '@/lib/boot'
   import { onMount } from 'svelte'
   import AdminShell, { type AdminTab } from '@/admin/AdminShell.svelte'
-  import NewSeminar from '@/admin/screens/NewSeminar.svelte'
+  const loadNewSeminar = () => import('@/admin/screens/NewSeminar.svelte')
   import { adminAuth } from '@/admin/auth.svelte'
-  import Oracle from '@/admin/screens/Oracle.svelte'
-  import Environments from '@/admin/screens/Environments.svelte'
+  const loadOracle = () => import('@/admin/screens/Oracle.svelte')
+  const loadEnvironments = () => import('@/admin/screens/Environments.svelte')
   import Seminars from '@/admin/screens/Seminars.svelte'
-  import Courses from '@/admin/screens/Courses.svelte'
-  import Competitions from '@/admin/screens/Competitions.svelte'
-  import Contests from '@/admin/screens/Contests.svelte'
+  const loadCourses = () => import('@/admin/screens/Courses.svelte')
+  const loadCompetitions = () => import('@/admin/screens/Competitions.svelte')
+  const loadContests = () => import('@/admin/screens/Contests.svelte')
   import { readContestRoute } from '@/admin/contests'
-  import Publish from '@/admin/screens/Publish.svelte'
-  import Teachers from '@/admin/screens/Teachers.svelte'
-  import ResourcesTab from '@/admin/screens/ResourcesTab.svelte'
-  import RemoteMachine from '@/admin/screens/RemoteMachine.svelte'
-  import AuditLog from '@/admin/screens/AuditLog.svelte'
+  const loadPublish = () => import('@/admin/screens/Publish.svelte')
+  const loadTeachers = () => import('@/admin/screens/Teachers.svelte')
+  const loadResourcesTab = () => import('@/admin/screens/ResourcesTab.svelte')
+  const loadRemoteMachine = () => import('@/admin/screens/RemoteMachine.svelte')
+  const loadAuditLog = () => import('@/admin/screens/AuditLog.svelte')
   import SignInScreen from '@/screens/SignInScreen.svelte'
   import { readEntryCredential, SPENT_PATH } from '@/admin/entry'
 
@@ -344,10 +345,16 @@
   <AdminShell {tab} {listShown} {navigate}>
     {#if publishing}
       {#key publishing}
+        <Lazy load={loadPublish}>
+          {#snippet children(Publish)}
         <Publish sessionId={publishing} from={query.get('from')} focus={query.get('focus')} {navigate} />
+          {/snippet}
+        </Lazy>
       {/key}
     {:else if newRoom}
       {#key search}
+        <Lazy load={loadNewSeminar}>
+          {#snippet children(NewSeminar)}
         <NewSeminar
           prefill={newRoomRow}
           backToCourse={newRoomFrom !== null}
@@ -364,33 +371,69 @@
             navigate('/admin')
           }}
         />
+          {/snippet}
+        </Lazy>
       {/key}
     {:else if tab === 'courses'}
+      <Lazy load={loadCourses}>
+        {#snippet children(Courses)}
       <Courses open={openCourse} edit={query.get('edit')} {navigate} />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'competitions'}
+      <Lazy load={loadCompetitions}>
+        {#snippet children(Competitions)}
       <Competitions open={openCompetition} tab={competitionTab} {navigate} />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'contests'}
+      <Lazy load={loadContests}>
+        {#snippet children(Contests)}
       <Contests
         open={contestRoute?.id ?? null}
         tab={contestRoute?.tab ?? 'submissions'}
         problem={contestRoute?.problem ?? null}
         {navigate}
       />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'environments'}
+      <Lazy load={loadEnvironments}>
+        {#snippet children(Environments)}
       <Environments />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'oracle'}
+      <Lazy load={loadOracle}>
+        {#snippet children(Oracle)}
       <Oracle />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'teachers'}
+      <Lazy load={loadTeachers}>
+        {#snippet children(Teachers)}
       <Teachers />
+        {/snippet}
+      </Lazy>
     {:else if tab === 'resources'}
       {#if openMachine}
-        {#key openMachine}<RemoteMachine id={openMachine} {navigate} />{/key}
+        {#key openMachine}<Lazy load={loadRemoteMachine}>{#snippet children(RemoteMachine)}<RemoteMachine id={openMachine} {navigate} />{/snippet}</Lazy>{/key}
       {:else}
+        <Lazy load={loadResourcesTab}>
+          {#snippet children(ResourcesTab)}
         <ResourcesTab {navigate} />
+          {/snippet}
+        </Lazy>
       {/if}
     {:else if tab === 'audit'}
+      <Lazy load={loadAuditLog}>
+        {#snippet children(AuditLog)}
       <AuditLog />
+        {/snippet}
+      </Lazy>
     {:else if makingSeminar}
+      <Lazy load={loadNewSeminar}>
+        {#snippet children(NewSeminar)}
       <NewSeminar
           prefill={newRoomFolder ? { course: newRoomFolder } : null}
           ondone={(createdId) => {
@@ -406,6 +449,8 @@
             arrived = createdId ?? null
           }}
         />
+        {/snippet}
+      </Lazy>
     {:else}
       <!-- The landing is one-shot: an `arrived` left hanging reset the search
            again and highlighted the same room as new on every return to the

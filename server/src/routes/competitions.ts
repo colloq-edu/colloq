@@ -1047,12 +1047,13 @@ export function competitionRoutes(inventory = readEnvironmentInventory, freezes:
     const push = (): void => {
       // Taken off /k meanwhile: the stream ends, and the reconnect gets the door's 404.
       const fresh = visible(competition.id)
-      if (!fresh) {
+      const viewer = currentEntrant(req)
+      if (!fresh || !viewer || viewer.id !== me.id) {
         stop()
         res.end()
         return
       }
-      const body = JSON.stringify(submissionsView(fresh, me))
+      const body = JSON.stringify(submissionsView(fresh, viewer))
       if (body === last) return
       last = body
       res.write(`event: state\ndata: ${body}\n\n`)

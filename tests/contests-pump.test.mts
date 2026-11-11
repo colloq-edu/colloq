@@ -348,28 +348,28 @@ test('a judging stopped for a removal never writes the judge\'s «aborted» as a
 
 test('the reference passes on THESE tests with THESE limits: a changed limit or tests make it unchecked', async () => {
   const { contest, problem } = fixture()
-  assert.equal(referenceStatus(problem).state, 'unchecked')
+  assert.equal((await referenceStatus(problem)).state, 'unchecked')
   enqueueTeacherRun(problem, 'reference')
-  assert.equal(referenceStatus(problem).state, 'queued')
+  assert.equal((await referenceStatus(problem)).state, 'queued')
   await drainContestJudge()
-  let status = referenceStatus(getProblem(problem.id)!)
+  let status = await referenceStatus(getProblem(problem.id)!)
   assert.equal(status.state, 'passes')
   assert.equal(status.slowestTest, 3)
   assert.ok(status.submissionId)
   // A tighter limit: what passed under one second says nothing about half of it.
   updateProblem(problem.id, { timeLimitMs: 500 })
-  assert.equal(referenceStatus(getProblem(problem.id)!).state, 'unchecked')
+  assert.equal((await referenceStatus(getProblem(problem.id)!)).state, 'unchecked')
   updateProblem(problem.id, { timeLimitMs: 1000 })
-  assert.equal(referenceStatus(getProblem(problem.id)!).state, 'passes', 'back to the limits it was checked under')
+  assert.equal((await referenceStatus(getProblem(problem.id)!)).state, 'passes', 'back to the limits it was checked under')
   // New tests: unchecked again.
   const now = getProblem(problem.id)!
   changeTests(now, [{ sample: false, group: 0, input: { bytes: Buffer.from('x') }, answer: { bytes: Buffer.from('y') }, answerFrom: 'upload' }])
-  assert.equal(referenceStatus(getProblem(problem.id)!).state, 'unchecked')
+  assert.equal((await referenceStatus(getProblem(problem.id)!)).state, 'unchecked')
   // A failing reference says how.
   updateProblem(problem.id, { referenceSource: 'wa 1' })
   enqueueTeacherRun(getProblem(problem.id)!, 'reference')
   await drainContestJudge()
-  status = referenceStatus(getProblem(problem.id)!)
+  status = await referenceStatus(getProblem(problem.id)!)
   assert.equal(status.state, 'fails')
   assert.equal(status.verdict, 'WA')
   assert.equal(status.failedTest, 1)
@@ -397,7 +397,7 @@ test('the reference writes the missing answers as a NEW revision, keeps the uplo
   assert.equal(readTestFile(contest.id, problem.id, after.testsRevision, 2, 'ans').toString(), 'C D\n')
   assert.equal(revisionExists(contest.id, problem.id, before.testsRevision), false, 'the old revision went with nothing pinning it')
   // The revision moved, so the reference was checked again by itself.
-  assert.equal(referenceStatus(after).state, 'passes')
+  assert.equal((await referenceStatus(after)).state, 'passes')
 })
 
 test('answers from a run whose tests changed meanwhile are not written', async () => {

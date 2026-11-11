@@ -55,19 +55,30 @@ interface RunResult {
   out: string
 }
 
-function run(args: string[], timeoutMs = 20_000): Promise<RunResult> {
+function run(args: string[], timeoutMs = 20_000, maxOutputChars = Infinity): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('docker', args)
     let out = ''
+    let clipped = false
+    const collect = (chunk: Buffer): void => {
+      // `docker logs --tail` bounds lines, not bytes: one line can be huge.
+      // Bound collection itself, rather than slicing only after buffering it.
+      const tail = Number.isFinite(maxOutputChars) ? chunk.subarray(-maxOutputChars) : chunk
+      const text = tail.toString()
+      clipped ||= tail.length < chunk.length || out.length + text.length > maxOutputChars
+      out = (out + text).slice(-maxOutputChars)
+    }
     const kill = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
-    child.stderr.on('data', (d: Buffer) => (out += d.toString()))
+    child.stdout.on('data', collect)
+    child.stderr.on('data', collect)
     child.on('error', (err) => {
       clearTimeout(kill)
       resolve({ code: -1, out: String(err) })
     })
     child.on('close', (code) => {
       clearTimeout(kill)
+      // Never return a partial leading line: it may begin inside a token.
+      if (clipped) out = out.includes('\n') ? out.slice(out.indexOf('\n') + 1) : ''
       resolve({ code: code ?? -1, out: out.trim() })
     })
   })
@@ -1894,13 +1905,41 @@ function assertLocalRoomRunning(sessionId: string): void {
   if (locallyStoppedRooms.has(sessionId)) throw new Error('Local session is stopping')
 }
 
+/** Startup messages may contain Jupyter's token-bearing URL or environment. */
+function startupDiagnostic(text: string, token: string): string {
+  return text
+    .split(token).join('[redacted]')
+    .replace(/([?&](?:token|access_token)=)[^\s&#"'<>]*/gi, '$1[redacted]')
+    .replace(/((?:JUPYTER_TOKEN|(?:IdentityProvider|ServerApp|NotebookApp)\.token|["']?token["']?)\s*[:=]\s*["']?)[^\s"'&,;<>]+/gi, '$1[redacted]')
+    .replace(/(Authorization\s*:\s*(?:Bearer|token)\s+)\S+/gi, '$1[redacted]')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+    .slice(-4096)
+}
+
+/** Read process state only after a failed readiness poll; HTTP alone hides exits. */
+async function startupFailure(container: string, token: string): Promise<Error | null> {
+  const inspected = await run(['inspect', container, '--format', '{{json .State}}'], 5000, 8192)
+  if (inspected.code !== 0) return null // An unavailable daemon is not proof of a dead process.
+  let state: { Status?: string; ExitCode?: number; OOMKilled?: boolean; Error?: string }
+  try { state = JSON.parse(inspected.out) } catch { state = { Status: inspected.out.trim() } }
+  if (!state || (!['exited', 'dead'].includes(state.Status ?? '') && !state.OOMKilled)) return null
+  const logs = await run(['logs', '--tail', '40', container], 5000, 16 * 1024)
+  const detail = startupDiagnostic([state.Error, logs.out].filter(Boolean).join('\n'), token)
+  return new Error(tr(state.OOMKilled ? 'server.kernel.startupOOM' : 'server.kernel.startupExited', {
+    code: Number.isInteger(state.ExitCode) ? state.ExitCode! : '?',
+    detail: detail ? `\n${detail}` : '',
+  }))
+}
+
 async function startContainer(
   sessionId: string,
   env: string,
   role: KernelRole = 'room',
   retried = false,
+  assertStart: () => void = () => assertLocalRoomRunning(sessionId),
 ): Promise<KernelEndpoint> {
-  assertLocalRoomRunning(sessionId)
+  assertStart()
   const container = containerFor(sessionId, role)
   const image = `${IMAGE_PREFIX}:${env}`
   const network = roomNetwork()
@@ -1918,7 +1957,7 @@ async function startContainer(
    */
   const gpu = role === 'room' && needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
-  assertLocalRoomRunning(sessionId)
+  assertStart()
 
   /*
    * Recreate the container and try again, exactly once.
@@ -1929,7 +1968,7 @@ async function startContainer(
    * error on the cell.
    */
   const recreate = async (why: string): Promise<KernelEndpoint> => {
-    assertLocalRoomRunning(sessionId)
+    assertStart()
     if (retried) throw new Error(tr("server.couldNotStartTheRoomContainer.cf7398", { p0: why }))
     /*
      * Say it out loud when a live (or frozen) container is removed.
@@ -1943,7 +1982,7 @@ async function startContainer(
     if (state === 'running' || state === 'broken') announceRecreate(sessionId, why, role)
     await run(['rm', '-f', container], 60_000)
     endpoints.delete(slotFor(sessionId, role))
-    return startContainer(sessionId, env, role, true)
+    return startContainer(sessionId, env, role, true, assertStart)
   }
 
   if (state === 'broken') {
@@ -1999,12 +2038,13 @@ async function startContainer(
       // The ban on local addresses goes up before the kernel wakes, not after:
       // if it fails, the room does not start (perimeter.ts · RoomPerimeterError).
       await ensureRoomPerimeter(run, perimeterTarget(), image)
-      assertLocalRoomRunning(sessionId)
+      assertStart()
       const stoppedLimits = await containerLimits(sessionId, role)
-      const started = await startWithMemory(sessionId, role, stoppedLimits.memoryMb ?? kernelLimits(sessionId, env, role).memoryMb, () => run(['start', container], 60_000))
+      const started = await startWithMemory(sessionId, role, stoppedLimits.memoryMb ?? kernelLimits(sessionId, env, role).memoryMb, () => { assertStart(); return run(['start', container], 60_000) })
       // The result is read: a container that did not come up would go on
       // answering "could not read the published port" to every Run, until a
       // manual docker rm.
+      assertStart()
       if (started.code !== 0) return recreate(tr("server.dockerStart.e0ac13", { p0: started.out.slice(-200) }))
     }
   } else if (state === 'missing') {
@@ -2024,7 +2064,7 @@ async function startContainer(
     // goes up before the kernel's first packet; if it fails, that is a refusal,
     // not an open network.
     await ensureRoomPerimeter(run, perimeterTarget(), image)
-    assertLocalRoomRunning(sessionId)
+    assertStart()
     const limits = kernelLimits(sessionId, env, role)
     const args = runArgs({
         sessionId,
@@ -2041,7 +2081,8 @@ async function startContainer(
         // it took for itself.
         ...limits,
       })
-    const created = await startWithMemory(sessionId, role, limits.memoryMb, () => run(args, 120_000))
+    const created = await startWithMemory(sessionId, role, limits.memoryMb, () => { assertStart(); return run(args, 120_000) })
+    assertStart()
     if (created.code !== 0) {
       // The network may have been removed between the check and the start:
       // the next attempt asks again instead of trusting what it remembered a
@@ -2057,18 +2098,24 @@ async function startContainer(
       const hint = noDriver
         ? tr("server.theHostMayBeMissingNvidiaContainer.f5c0df")
         : ''
-      throw new Error(tr("server.dockerRunFailed.0f4300", { p0: created.out.slice(-300), p1: hint }))
+      throw new Error(tr("server.dockerRunFailed.0f4300", { p0: startupDiagnostic(created.out, roomToken(sessionId, role)).slice(-300), p1: hint }))
     }
   }
 
-  assertLocalRoomRunning(sessionId)
+  assertStart()
   let url: string
   if (!publishes()) {
     // Inside the network they listen on the same 8888; there is nothing to publish.
     url = `http://${container}:8888`
   } else {
     const port = await publishedPort(container)
-    if (port === null) throw new Error(tr("server.couldNotReadThePublishedPortOf.07ca0a", { p0: container }))
+    assertStart()
+    if (port === null) {
+      // An early exit can remove the binding before the first HTTP poll.
+      const failed = await startupFailure(container, roomToken(sessionId, role))
+      assertStart()
+      throw failed ?? new Error(tr("server.couldNotReadThePublishedPortOf.07ca0a", { p0: container }))
+    }
     url = `http://127.0.0.1:${port}`
   }
 
@@ -2079,12 +2126,14 @@ async function startContainer(
   // "fetch failed" that says nothing about why.
   const deadline = Date.now() + 90_000
   let lastError = tr("server.noResponse.187241")
+  let nextStateCheck = 0
   while (Date.now() < deadline) {
-    assertLocalRoomRunning(sessionId)
+    assertStart()
     try {
       const res = await fetch(`${endpoint.url}/api/status?token=${endpoint.token}`, {
         signal: AbortSignal.timeout(4000),
       })
+      assertStart()
       if (res.ok) return endpoint
       /*
        * 401/403 does not mean "not up yet" but "a different token".
@@ -2102,9 +2151,16 @@ async function startContainer(
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
     }
+    assertStart()
+    if (Date.now() >= nextStateCheck) {
+      const failed = await startupFailure(container, endpoint.token)
+      assertStart()
+      if (failed) throw failed
+      nextStateCheck = Date.now() + 3000
+    }
     await new Promise((r) => setTimeout(r, 1500))
   }
-  throw new Error(tr("server.theRoomKernelDidNotRespondWithin.1324d5", { p0: lastError }))
+  throw new Error(tr("server.theRoomKernelDidNotRespondWithin.1324d5", { p0: startupDiagnostic(lastError, endpoint.token) }))
 }
 
 /**
@@ -2116,15 +2172,17 @@ async function startContainer(
 const endpoints = new Map<string, KernelEndpoint>()
 /** One start at a time per SLOT, shared by concurrent calls. */
 const starting = new Map<string, Promise<KernelEndpoint>>()
+/** Per-attempt cancellation survives release of an owner's temporary pause gate. */
+const startControls = new Map<string, { canceled: boolean }>()
 /**
  * Rooms closed while their container was still starting.
  *
  * `docker rm -f` in the middle of `docker run` does not catch up: the start
  * finishes and leaves the deleted seminar's container alive with its memory
  * limit; the idle sweep will not find it (the room is no longer in the maps),
- * and it lives until `make down`. `dropRoomKernel` cannot wait for the start,
- * that is up to a minute and a half on a delete request, so we mark it, and
- * the start cleans up after itself.
+ * and it lives until `make down`. Ordinary deletion marks the start for
+ * cancellation and lets it clean up asynchronously. An owner's stop waits
+ * for that cleanup before it confirms that the memory was freed.
  */
 const abandoned = new Set<string>()
 /** Broker ensures in flight, per slot: a DELETE waits for the ones it would otherwise race. */
@@ -2259,6 +2317,8 @@ async function homeEndpoint(sessionId: string, env: string | null, role: KernelR
   if (!(await canIsolate())) throw new Error('Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted')
 
   assertLocalRoomRunning(sessionId)
+  if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
+  if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
   const slot = slotFor(sessionId, role)
   const cached = endpoints.get(slot)
   if (cached) return cached
@@ -2267,21 +2327,33 @@ async function homeEndpoint(sessionId: string, env: string | null, role: KernelR
   if (inFlight) return inFlight
 
   const name = (env ?? '').trim() || activeName()
-  const attempt = startContainer(sessionId, name, role)
+  const control = { canceled: false }
+  startControls.set(slot, control)
+  const assertStart = (): void => {
+    assertLocalRoomRunning(sessionId)
+    if (control.canceled || kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
+    if (kernelStartsPaused(sessionId, role)) throw new Error(tr('server.kernel.startsPaused'))
+  }
+  const attempt = startContainer(sessionId, name, role, false, assertStart)
     .then((endpoint) => {
+      assertStart()
       endpoints.set(slot, endpoint)
       return endpoint
     })
-    .finally(() => {
+    .finally(async () => {
+      // Cleanup is part of the start's settlement: a waiting owner cannot be
+      // told "stopped" immediately before an untracked late removal.
+      if (abandoned.has(slot)) await discardSlot(slot)
+      // Another stop can join while discard awaits Docker. Clear its mark
+      // only after cleanup, before allowing a later start to own this slot.
+      abandoned.delete(slot)
       starting.delete(slot)
+      startControls.delete(slot)
       // The reservation has done its job: either the container already
       // carries the slice label, or there is no container and the slice is
       // free. It must not outlive the start, otherwise a failed environment
       // build takes the slice from the next seminar for good.
       reserved.delete(sessionId)
-      // The room was closed while this was starting: we remove the container
-      // (finished or half-made) ourselves, since nobody else will.
-      if (abandoned.delete(slot)) void discardSlot(slot)
     })
   starting.set(slot, attempt)
   return attempt
@@ -2397,10 +2469,18 @@ export interface OwnerStop {
 }
 
 /** `docker rm -f` of one slot; whether the container is gone (or never was). */
-async function removeSlot(slot: string): Promise<{ gone: boolean; out: string }> {
+async function removeSlot(slot: string, waitForStart = false): Promise<{ gone: boolean; out: string }> {
   // A start in progress right now would put the container back a second
   // later: we mark the slot, and the start removes it itself when it ends.
-  if (starting.has(slot)) abandoned.add(slot)
+  const pending = starting.get(slot)
+  if (pending) {
+    abandoned.add(slot)
+    const control = startControls.get(slot)
+    if (control) control.canceled = true
+    // Ordinary deletion remains asynchronous; an owner stop promises freed
+    // memory, so it waits for every already-issued create, then verifies rm.
+    if (waitForStart) await Promise.allSettled([pending])
+  }
   const result = await run(['rm', '-f', containerOfSlot(slot)], 60_000)
   const gone = result.code === 0 || /no such container/i.test(result.out)
   if (!starting.has(slot) && gone) releaseWorkAllocation(slot)
@@ -2456,7 +2536,7 @@ export async function dropRoomKernel(sessionId: string, permanent = false, optio
   }
   const failures: Array<{ slot: string; out: string }> = []
   for (const slot of slotsOf(sessionId)) {
-    const removed = await removeSlot(slot)
+    const removed = await removeSlot(slot, options.owner)
     if (!removed.gone) failures.push({ slot, out: removed.out })
   }
   await refreshKernelAllocations()
@@ -2512,7 +2592,7 @@ export async function dropOwnKernel(sessionId: string, options: OwnerStop = {}):
     if (options.owner) throw new Error(ISOLATION_UNAVAILABLE)
     return
   }
-  const removed = await removeSlot(slot)
+  const removed = await removeSlot(slot, options.owner)
   await refreshKernelAllocations()
   if (options.owner && !removed.gone) throw notRemoved([{ slot, out: removed.out }])
 }

@@ -149,6 +149,7 @@ export function stubJudge(): StubJudge {
   const waiting: Array<() => void> = []
   const judge: StubJudge = {
     backend: 'test',
+    async resolveImage(image) { return image },
     requests: [],
     probed: [],
     sweeps: 0,

@@ -37,40 +37,7 @@ import {
   renderShareBlock,
 } from './launch-share.js'
 import { leaseUrl } from '../../shared/local-public-url-lease.js'
-import { createRequire } from 'node:module'
-
-/**
- * Third-party bundles the frontend serves as is: put them in place before
- * Vite starts.
- *
- * The pdf.js worker and plotly.js are not imported by the sources: they are
- * static files in `web/public`, and the `npm run assets` step
- * (web/package.json) lays them out, that is, `npm run dev` and `npm run
- * build`. This command calls Vite DIRECTLY, bypassing npm, and on a fresh
- * clone plotly.js (it is not in git: five megabytes derivable from
- * package-lock) would not be in place: instead of a picture a chart would say
- * it failed to load. A copy is made only when there is none or it has a
- * different size; a failure does not bring the start down: without these
- * files two things do not work, not everything.
- */
-function layOutWebAssets(root: string): void {
-  const from = createRequire(path.join(root, 'web/package.json'))
-  const copies: Array<[string, string]> = [
-    ['pdfjs-dist/build/pdf.worker.min.mjs', 'web/public/pdf/pdf.worker.min.mjs'],
-    ['plotly.js-strict-dist-min/plotly-strict.min.js', 'web/public/plotly/plotly.min.js'],
-  ]
-  for (const [module, target] of copies) {
-    try {
-      const source = from.resolve(module)
-      const to = path.join(root, target)
-      if (fs.existsSync(to) && fs.statSync(to).size === fs.statSync(source).size) continue
-      fs.mkdirSync(path.dirname(to), { recursive: true })
-      fs.copyFileSync(source, to)
-    } catch (error) {
-      console.warn(`[colloq] ${target}: ${error instanceof Error ? error.message : String(error)} — npm ci?`)
-    }
-  }
-}
+import { layOutWebAssets } from './web-assets.js'
 
 /*
  * Two roots instead of one: root is where the application is, home is where

@@ -34,13 +34,12 @@
 export const PLOTLY_MIME = 'application/vnd.plotly.v1+json'
 
 /**
- * The plotly.js bundle — from our origin, at a fixed address.
+ * The Plotly module entry — from our origin, at a fixed address.
  *
  * The file is put into `web/public/plotly/` by the `plotly:dist` script
- * (web/package.json) — the same trick as for the pdf.js worker. A fixed
- * address is needed by TWO sides at once: the frame's markup refers to it and
- * it also sits in the frame's `script-src`, while the header is built by the
- * server, which knows nothing about the frontend build.
+ * (web/package.json). It imports a shared core and requests strict trace
+ * modules only for types used by the figure. The server knows this stable
+ * entry and module directory; content hashes are decided by the build.
  *
  * No CDNs. Cloudflare and half of the rest are unreachable from Russia
  * (memory: cloudflare-blocked-from-russia), and a classroom without internet
@@ -48,6 +47,14 @@ export const PLOTLY_MIME = 'application/vnd.plotly.v1+json'
  * instead of a chart.
  */
 export const PLOTLY_BUNDLE_PATH = '/plotly/plotly.min.js'
+
+/** Generated module paths only; room uploads and arbitrary static JS never
+ * receive the sandbox's public-module CORS policy. */
+export function isPlotlyModulePath(value: string): boolean {
+  return value === PLOTLY_BUNDLE_PATH || /^\/plotly\/chunks\/[A-Za-z0-9_-]+\.js$/.test(value)
+}
+
+export const PLOTLY_MODULE_PATH = '/plotly/'
 
 /**
  * The address of the frame page.

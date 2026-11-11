@@ -95,7 +95,8 @@ test('names off — "Variant N" instead of the name, and no face either', () => 
 /* ------------------------------------------------------- in the notebook */
 
 test('the badge stands under its cell — for both the student and the teacher', () => {
-  assert.match(CELL, /import CouncilOnScreen from '@\/components\/council\/CouncilOnScreen\.svelte'/)
+  assert.match(CELL, /const loadCouncilOnScreen = \(\) => import\('@\/components\/council\/CouncilOnScreen\.svelte'\)/)
+  assert.match(SHEET, /<Lazy load=\{loadCouncilOnScreen\}>\s*\{#snippet children\(CouncilOnScreen\)\}/)
   // For the student — inside their own sheet, AFTER the teacher's letters
   // and before the footer.
   assert.match(SHEET, /<CouncilOnScreen shown=\{onScreen\} lineNumbers=\{numbered\} \/>/)
@@ -114,6 +115,7 @@ test('the badge stands under its cell — for both the student and the teacher',
   // second.
   const host = CELL.slice(CELL.indexOf('data-council-host'))
   assert.match(host, /\{#if leads && showsOnScreen && onScreen\}/)
+  assert.match(host, /<Lazy load=\{loadCouncilOnScreen\}>\s*\{#snippet children\(CouncilOnScreen\)\}/)
   assert.match(host, /mayClear\s+onclear=\{\(\) => session\.council\.clearShown\(id\)\}/)
 })
 

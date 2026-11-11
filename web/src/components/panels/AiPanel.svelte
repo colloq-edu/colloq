@@ -36,7 +36,8 @@
   import { watchBooks, watchCellNumbers } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import ChatTurn from './ChatTurn.svelte'
+  import Lazy from '@/components/ui/Lazy.svelte'
+  const loadChatTurn = () => import('./ChatTurn.svelte')
 
   const session = getSessionState()
   const cellNumbers = watchCellNumbers(session.doc)
@@ -1066,6 +1067,8 @@
       {#each feed as item (item.kind === 'turn' ? item.entry.id : item.key)}
         {#if item.kind === 'turn'}
           {@const entry = item.entry}
+          <Lazy load={loadChatTurn}>
+            {#snippet children(ChatTurn)}
           <ChatTurn
             {entry}
             pending={entry.id.startsWith('outgoing:')}
@@ -1082,6 +1085,8 @@
             onstop={() => void stop(entry.id)}
             onundo={() => undo(entry.id)}
           />
+            {/snippet}
+          </Lazy>
         {:else}
           <!-- Others' turns folded under "Mine": the gap is shown, not hidden. -->
           <div class="flex items-center gap-2.5 px-4 py-1.5">

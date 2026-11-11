@@ -2956,6 +2956,29 @@ def _reduce(pickler, obj, parent):
             reduced = _array(pickler, obj, np)
             if reduced is not None:
                 return reduced
+        if np is not None and _module_of(kind) == 'pandas.core.internals.blocks':
+            values = getattr(obj, 'values', None)
+            if type(values) is np.ndarray and not values.dtype.hasobject:
+                # pandas 3.1's protocol-5 block reducer copies strided values
+                # before our ndarray reducer sees them. That hides their owner,
+                # charges train/test slices again and duplicates their files.
+                # Its protocol-4 block recipe retains the original values;
+                # this pickler still carries those arrays with protocol 5 and
+                # our normal owner/budget rules. Keep custom subclasses and
+                # extension/object blocks on their own reduction paths.
+                recipe = obj.__reduce_ex__(4)
+                refs = getattr(obj, 'refs', None)
+                if refs is not None and isinstance(recipe, tuple) and len(recipe) == 2:
+                    # Shared bytes alone are not pandas Copy-on-Write. Carry
+                    # the source reference group's identity through the memo
+                    # too, so a slice writes privately after unpickling.
+                    return (_pandas_block, (recipe[0], recipe[1], refs))
+                return recipe
+        internals = sys.modules.get('pandas._libs.internals')
+        if internals is not None and kind is getattr(internals, 'BlockValuesRefs', None):
+            # A fresh group, never its source-process weakrefs. The pickle
+            # memo gives every block from one source group this same object.
+            return (kind, ())
         torch = _torch()
         if torch is not None:
             try:
@@ -3176,6 +3199,14 @@ def _view_of(base, offset, shape, strides, dtype, writeable):
     return made
 
 
+def _pandas_block(factory, args, refs):
+    """Restore a numeric block and its original Copy-on-Write reference group."""
+    block = factory(*args)
+    block.refs = refs
+    refs.add_reference(block)
+    return block
+
+
 def _storage(pickler, obj, torch):
     """torch's CPU storages out of band, as numpy's blocks are (§9.4); None for anything else.
 
@@ -3302,7 +3333,7 @@ def _rebound_state(fn, state):
 
 
 # This module's own functions a stream names: always by name, a worker has them.
-_BY_NAME = frozenset((_rebound, _rebound_state, _view_of, _untyped_storage, _typed_storage, _singleton))
+_BY_NAME = frozenset((_rebound, _rebound_state, _view_of, _pandas_block, _untyped_storage, _typed_storage, _singleton))
 
 
 def _trial(obj, ns, cap, threshold, counted):

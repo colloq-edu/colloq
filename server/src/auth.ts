@@ -174,10 +174,15 @@ export function verifyHandoffToken(
   if (parts.length !== 3) return null
   const [who, untilRaw, sig] = parts
   const until = Number.parseInt(untilRaw, 36)
-  if (!Number.isFinite(until) || Date.now() > until) return null
+  // Verification and single-use consumption must identify the same grant.
+  // Reject alternate textual representations before checking its signature.
+  if (!Number.isSafeInteger(until) || until.toString(36) !== untilRaw || Date.now() > until) return null
   let decoded: string
   try {
-    decoded = Buffer.from(who, 'base64url').toString('utf8')
+    const bytes = Buffer.from(who, 'base64url')
+    if (bytes.toString('base64url') !== who) return null
+    decoded = bytes.toString('utf8')
+    if (!Buffer.from(decoded, 'utf8').equals(bytes)) return null
   } catch {
     return null
   }
@@ -220,7 +225,9 @@ export function spendHandoffToken(
   const now = Date.now()
   // Cleanup right here: keys are few, and otherwise the Map grows all semester.
   for (const [key, until] of spentHandoffs) if (until <= now) spentHandoffs.delete(key)
-  const key = `${sessionId}\u0000${token as string}`
+  // The verified signature identifies the authenticated grant, independently
+  // of how a caller supplied its fields. The verifier also requires canonical input.
+  const key = `${sessionId}\u0000${(token as string).split('.')[2]}`
   if (spentHandoffs.has(key)) return null
   spentHandoffs.set(key, now + HANDOFF_TTL_MS)
   return holder

@@ -51,7 +51,7 @@ export interface JudgeRequest {
   submissionId: string
   /** The container's name; it is also what it is killed and removed by. */
   container: string
-  /** `colloq-kernel:<environment>`. */
+  /** Immutable image ID resolved from `colloq-kernel:<environment>` (the test judge uses its tag). */
   image: string
   language: ContestLanguage
   source: string
@@ -119,6 +119,8 @@ export interface LanguageProbe {
 
 export interface ContestJudge {
   readonly backend: JudgeBackend
+  /** Resolve a mutable environment tag to the exact image this run must use. */
+  resolveImage(image: string): Promise<string>
   judge(request: JudgeRequest): Promise<JudgeOutcome>
   /** What the image can run; asked once per image and kept by the caller. */
   probe(image: string): Promise<LanguageProbe>

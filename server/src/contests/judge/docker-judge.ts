@@ -681,6 +681,14 @@ function sleep(ms: number): Promise<void> {
 export class DockerContestJudge implements ContestJudge {
   readonly backend = 'docker' as const
 
+  async resolveImage(image: string): Promise<string> {
+    const result = await docker(['image', 'inspect', image, '--format', '{{.Id}}'], 20_000, 4096)
+    if (result.code !== 0 || !/^sha256:[a-f0-9]{64}$/.test(result.out.trim())) {
+      throw new Error(`Cannot resolve contest image ${image}`)
+    }
+    return result.out.trim()
+  }
+
   async judge(request: JudgeRequest): Promise<JudgeOutcome> {
     const started = Date.now()
     layOutJob(request)

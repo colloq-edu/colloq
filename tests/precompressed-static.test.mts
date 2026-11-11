@@ -22,7 +22,8 @@ fs.writeFileSync(path.join(root, 'pdf/pdf.worker.min.mjs.br'), br)
 // plotly.js is copied in beside the build like the PDF worker, and
 // web/scripts/precompress.mjs writes both sidecars for it.
 fs.mkdirSync(path.join(root, 'plotly'), { recursive: true })
-for (const name of ['plotly.min.js', 'other.js']) {
+fs.mkdirSync(path.join(root, 'plotly/chunks'), { recursive: true })
+for (const name of ['plotly.min.js', 'other.js', 'chunks/strict-ABCDEFGH.js']) {
   fs.writeFileSync(path.join(root, 'plotly', name), source)
   fs.writeFileSync(path.join(root, 'plotly', name + '.br'), br)
   fs.writeFileSync(path.join(root, 'plotly', name + '.gz'), gz)
@@ -112,7 +113,7 @@ test('the plotly bundle is sent from its stored sidecars, not compressed again p
   assert.match(brotli.headers['content-type'] ?? '', /javascript/)
   assert.match(brotli.headers.vary ?? '', /Accept-Encoding/i)
   // An unversioned name: the same hour as the static handler gives it.
-  assert.equal(brotli.headers['cache-control'], 'public, max-age=3600')
+  assert.equal(brotli.headers['cache-control'], 'no-cache')
   const gzip = await get('/plotly/plotly.min.js', { 'accept-encoding': 'gzip' })
   assert.equal(gzip.headers['content-encoding'], 'gzip')
   assert.deepEqual(gzip.body, gz)
@@ -139,6 +140,24 @@ test('only the exact plotly bundle is let through, and a stale one falls back', 
     fs.writeFileSync(bundle, source)
     fs.writeFileSync(bundle + '.br', br)
     fs.writeFileSync(bundle + '.gz', gz)
+  }
+})
+
+test('only generated public Plotly modules receive opaque-sandbox CORS in every encoding', async () => {
+  for (const file of ['/plotly/plotly.min.js', '/plotly/chunks/strict-ABCDEFGH.js']) {
+    for (const encoding of ['identity', 'gzip', 'br']) {
+      const response = await get(file, { 'accept-encoding': encoding, origin: 'null' })
+      assert.equal(response.status, 200)
+      assert.equal(response.headers['access-control-allow-origin'], '*')
+      assert.equal(response.headers['access-control-allow-credentials'], undefined)
+      assert.equal(response.headers['cache-control'], file.endsWith('/plotly.min.js')
+        ? 'no-cache' : 'public, max-age=31536000, immutable')
+      if (encoding !== 'identity') assert.equal(response.headers['content-length'], String(encoding === 'br' ? br.length : gz.length))
+    }
+  }
+  for (const file of ['/plotly/other.js', '/assets/plain.js', '/api/health']) {
+    const response = await get(file, { origin: 'null' })
+    assert.equal(response.headers['access-control-allow-origin'], undefined)
   }
 })
 

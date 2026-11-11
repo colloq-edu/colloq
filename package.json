@@ -36,6 +36,13 @@
     "docs:check": "python3 docs/build.py && git diff --exit-code -- site/docs site/sitemap.xml"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.63.0",
+    "esbuild": "^0.28.2"
+  },
+  "overrides": {
+    "qs": "^6.16.1",
+    "satori": {
+      "fflate": "^0.7.5"
+    }
   }
 }

@@ -77,7 +77,7 @@ function links(path: string, saved: string | null, ready = false, lang = 'ru'): 
 }
 
 const ROOM = [
-  '/assets/SessionScreen-test.js', '/assets/codemirror-test.js', '/assets/render-test.js',
+  '/assets/SessionScreen-test.js', '/assets/codemirror-test.js',
   '/assets/yjs-test.js', '/assets/SessionScreen-test.css',
 ]
 
@@ -138,6 +138,7 @@ test('the app stylesheet is preloaded as a style and promoted on load', () => {
 test('a cold room warms after the join form paints, including denied storage', () => {
   const wanted = [...ROOM, '/assets/room-ru-test.js']
   assert.deepEqual(downloads('/s/room1', null, false, true), wanted)
+  assert.ok(!wanted.includes('/assets/render-test.js'), 'output rendering follows content, never an empty code room')
   assert.deepEqual(downloads('/s/room1', null, true, true), wanted)
   assert.deepEqual(downloads('/admin', null, false, true), ['/assets/AdminScreen-test.js', '/assets/admin-ru-test.js'])
   assert.deepEqual(downloads('/p/room1', null, false, true), [
@@ -147,7 +148,7 @@ test('a cold room warms after the join form paints, including denied storage', (
 })
 
 test('ready does not duplicate a returning room preload', () => {
-  assert.equal(downloads('/s/room1', '{"room1":{"token":"saved-token"}}', false, true).length, 7)
+  assert.equal(downloads('/s/room1', '{"room1":{"token":"saved-token"}}', false, true).length, ROOM.length + 2)
 })
 
 // The notebook is needed AFTER the form, not instead of it: low priority is
@@ -230,7 +231,7 @@ test('the preload manifest names exactly what the head asks for on each route', 
 // A chunk was renamed — the build must fail rather than silently bring back
 // the extra network round that is removed here.
 test('a renamed chunk fails the build instead of silently losing a preload', () => {
-  for (const name of ['SessionScreen', 'codemirror', 'render', 'App', 'room-ru', 'admin-en']) {
+  for (const name of ['SessionScreen', 'codemirror', 'App', 'room-ru', 'admin-en']) {
     const without = Object.fromEntries(
       Object.entries(bundle).filter(([, chunk]) => (chunk as { name: string }).name !== name),
     )

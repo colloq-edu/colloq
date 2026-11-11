@@ -93,6 +93,8 @@ import {
   listContests,
   listEntrantProblemSubmissions,
   listEntrantSubmissions,
+  entrantSubmissionsVersion,
+  submissionsVersion,
   listProblems,
   listQuestions,
   listTests,
@@ -109,7 +111,7 @@ import {
   type StoredSubmission,
 } from '../contests/store.js'
 import { boardVersion, contestBoard, problemMaxScore, type BoardViewer } from '../contests/standings.js'
-import { currentJudge, imageLanguages, languageAvailable, languageLabel, languageOptions, wakeContestJudge } from '../contests/pump.js'
+import { currentJudge, environmentImage, imageLanguages, languageAvailable, languageLabel, languageOptions, wakeContestJudge } from '../contests/pump.js'
 import { testSnippet } from '../contests/storage.js'
 import { watchContest, type ContestEvent } from '../contests/events.js'
 
@@ -277,11 +279,7 @@ function entrantTests(submission: StoredSubmission): TestReport[] {
 function submissionsView(contest: Contest, entrantId: string): EntrantContestSubmissions {
   const rows = listEntrantSubmissions(contest.id, entrantId)
   const letters = lettersOf(contest.id)
-  return { submissions: rows.map((row) => entrantSubmission(contest, row, letters)), version: mineVersion(rows) }
-}
-
-function mineVersion(rows: readonly StoredSubmission[]): string {
-  return hashOf(rows.map((row) => [row.id, row.state, row.verdict, row.progress, row.score, row.passed, row.judgedAt, row.testsRevision]))
+  return { submissions: rows.map((row) => entrantSubmission(contest, row, letters)), version: submissionsVersion(rows) }
 }
 
 /** The examples under a statement, whole up to the snippet cap. */
@@ -545,19 +543,27 @@ export function contestRoutes(): Router {
     if (Buffer.byteLength(body.source, 'utf8') > SOURCE_BYTES) {
       return refuse(res, 413, 'too_big', tr('contests.refusal.tooBig', { count: Math.round(SOURCE_BYTES / 1024) }))
     }
-    const probe = await imageLanguages(contest.environment)
+    const image = await environmentImage(contest.environment, true)
+    if (image === null) return refuse(res, 503, 'unavailable', tr('contests.refusal.imageUnavailable'))
+    const probe = await imageLanguages(contest.environment, Date.now(), image)
     if (probe === null) return refuse(res, 503, 'unavailable', tr('contests.refusal.imageUnavailable'))
     if (!languageAvailable(language, probe)) {
       return refuse(res, 400, 'language', tr('contests.refusal.languageMissing', { language: languageLabel(language, null) }))
     }
+    if (await environmentImage(contest.environment, true) !== image) {
+      return refuse(res, 503, 'unavailable', tr('contests.refusal.imageUnavailable'))
+    }
     // The probe may have taken a moment: the contest, its intake and the person as they are now.
     const fresh = visible(contest.id)
     if (!fresh) return refuse(res, 404, 'not_found', tr('contests.refusal.notFound'))
+    if (!problemOf(fresh.id, problem.id)) return refuse(res, 400, 'invalid', tr('contests.refusal.noProblem'))
+    if (!fresh.languages.includes(language)) return refuse(res, 400, 'language', tr('contests.refusal.languageNotTaken'))
+    if (fresh.environment !== contest.environment) return refuse(res, 503, 'unavailable', tr('contests.refusal.imageUnavailable'))
     const now = submissionsOpenFor(fresh, Date.now())
     if (now === 'not_open') return refuse(res, 403, 'not_open', tr('contests.refusal.notOpen'))
     if (now === 'closed') return refuse(res, 403, 'closed', tr('contests.refusal.closed'))
-    const still = getEntrant(me.id)
-    if (!still || still.disabled || contestJoinedAt(fresh.id, me.id) === null) {
+    const still = currentEntrant(req)
+    if (!still || still.id !== me.id || contestJoinedAt(fresh.id, me.id) === null) {
       return refuse(res, 401, 'unauthenticated', tr('contests.refusal.signIn'))
     }
     if (pendingCount(fresh.id, me.id) >= MAX_PENDING) return refuse(res, 409, 'in_flight', tr('contests.refusal.inFlight'))
@@ -578,6 +584,7 @@ export function contestRoutes(): Router {
       attemptsPerProblem: fresh.attemptsPerProblem,
     })
     if ('refusal' in taken) {
+      if (taken.refusal === 'problem') return refuse(res, 400, 'invalid', tr('contests.refusal.noProblem'))
       return taken.refusal === 'in_flight'
         ? refuse(res, 409, 'in_flight', tr('contests.refusal.inFlight'))
         : refuse(res, 409, 'attempts', tr('contests.refusal.attempts', { count: fresh.attemptsPerProblem }))
@@ -694,16 +701,17 @@ export function contestRoutes(): Router {
       if (closed) return
       lastAt = Date.now()
       const fresh = visible(contest.id, req, true)
-      if (!fresh) {
+      const viewer = currentEntrant(req)
+      if (!fresh || (me && viewer?.id !== me.id)) {
         stop()
         res.end()
         return
       }
       const state: ContestStreamState = {
         revision: fresh.revision,
-        mine: me ? submissionsView(fresh, me.id).version : '',
-        board: boardOpenTo(req, fresh, me) ? boardVersion(contestBoard(fresh, boardViewer(req, fresh, me))) : '',
-        questions: questionsVersion(fresh, me?.id ?? null),
+        mine: viewer ? entrantSubmissionsVersion(fresh.id, viewer.id) : '',
+        board: boardOpenTo(req, fresh, viewer) ? boardVersion(contestBoard(fresh, boardViewer(req, fresh, viewer))) : '',
+        questions: questionsVersion(fresh, viewer?.id ?? null),
       }
       const body = JSON.stringify(state)
       if (body === last) return
@@ -719,7 +727,10 @@ export function contestRoutes(): Router {
     push()
     if (closed) return
     unwatch = watchContest(contest.id, schedule)
-    beat = setInterval(() => res.write(': keep-alive\n\n'), KEEP_ALIVE_MS)
+    beat = setInterval(() => {
+      if (me && currentEntrant(req)?.id !== me.id) { stop(); res.end(); return }
+      res.write(': keep-alive\n\n')
+    }, KEEP_ALIVE_MS)
     req.on('close', stop)
   })
 

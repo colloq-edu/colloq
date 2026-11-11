@@ -21,6 +21,8 @@ export const commonMessages: MessageCatalog = {
   'common.environmentFreezeFailed': { ru: 'Не удалось скачать pip freeze. Попробуйте ещё раз.', en: 'Could not download the pip freeze. Try again.' },
   'common.loadingApp': { ru: 'Загрузка Colloq', en: 'Loading Colloq' },
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
+  'common.loadError': { ru: 'Не удалось загрузить эту часть приложения.', en: 'Could not load this part of the app.' },
+  'common.retry': { ru: 'Попробовать ещё раз', en: 'Try again' },
   'common.gigabytes': { ru: '{size} ГБ', en: '{size} GB' },
   'common.megabytes': { ru: '{size} МБ', en: '{size} MB' },
   'common.agentSteps': { ru: 'Действий на запрос', en: 'Actions per request' },

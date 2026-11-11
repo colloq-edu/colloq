@@ -178,6 +178,22 @@ test('a key is good for exactly one exchange', async () => {
   assert.equal((await claim(key)).status, 401, 'the same key was exchanged twice')
 })
 
+test('handoff accepts only its canonical serialized fields, before and after consumption', async () => {
+  const key = signHandoffToken(ROOM, 'p_teacher')
+  const [who, until, sig] = key.split('.')
+  const noncanonical = [
+    `${who}=.${until}.${sig}`,
+    `${who}.${until.toUpperCase()}.${sig}`,
+    `${who}.0${until}.${sig}`,
+    `${who}.${until}~.${sig}`,
+  ]
+  for (const value of noncanonical) assert.equal(verifyHandoffToken(ROOM, value), null)
+  assert.equal(verifyHandoffToken(ROOM, key)?.participantId, 'p_teacher')
+  assert.equal((await claim(key)).status, 200)
+  for (const value of noncanonical) assert.equal((await claim(value)).status, 401)
+  assert.equal((await claim(key)).status, 401)
+})
+
 test('a console issued on the strength of a cookie is taken away along with it', async () => {
   /*
    * The invariant from identity.test.mts: "host by cookie" is never written
