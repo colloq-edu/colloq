@@ -31,9 +31,9 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Notebook from '@/components/notebook/Notebook.svelte'
   import AiPanel from '@/components/panels/AiPanel.svelte'
-  import BanMenu from '@/components/panels/BanMenu.svelte'
+  import BanMenuLoader from '@/components/panels/BanMenuLoader.svelte'
   import BannedScreen from '@/components/BannedScreen.svelte'
-  import StaffGuestStrip from '@/components/StaffGuestStrip.svelte'
+  const loadStaffGuestStrip = () => import('@/components/StaffGuestStrip.svelte')
   import FilesPanel from '@/components/panels/FilesPanel.svelte'
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
   const loadTerminalDrawer = () => import('@/components/panels/TerminalDrawer.svelte')
@@ -88,7 +88,7 @@
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
   const loadFileEditor = () => import('@/components/editor/FileEditor.svelte')
-  import FileBar from '@/components/editor/FileBar.svelte'
+  const loadFileBar = () => import('@/components/editor/FileBar.svelte')
   import { leaderFor, sameLead, type Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { Tabs } from '@/lib/tabs.svelte'
@@ -2859,7 +2859,14 @@
     inside that block it showed only after the class had ended.
   -->
   {#if staffGuest && !isHost}
-    <StaffGuestStrip guest={staffGuest} sessionId={session.session.id} />
+    <Lazy load={loadStaffGuestStrip}>
+      {#snippet loading()}
+        <div class="h-14 shrink-0 border-b border-line" role="status" aria-label={tr('common.loading')} aria-busy="true"></div>
+      {/snippet}
+      {#snippet children(StaffGuestStrip)}
+        <StaffGuestStrip guest={staffGuest} sessionId={session.session.id} />
+      {/snippet}
+    </Lazy>
   {/if}
 
   <!-- Positioned, so the panel drawers below cover the workspace and stop at
@@ -2903,14 +2910,21 @@
       {/if}
 
       {#if activePath && activeKind === 'text'}
-        <FileBar
-          path={activePath}
-          mayRun={may.run && runnerFor(activePath) !== null}
-          mayEdit={may.files}
-          whyReadOnly={may.filesWhy}
-          refused={activeDoc?.refused ?? false}
-          onrun={() => runFile(activePath)}
-        />
+        <Lazy load={loadFileBar}>
+          {#snippet loading()}
+            <div class="h-[34px] shrink-0 border-b border-line" role="status" aria-label={tr('common.loading')} aria-busy="true"></div>
+          {/snippet}
+          {#snippet children(FileBar)}
+            <FileBar
+              path={activePath}
+              mayRun={may.run && runnerFor(activePath) !== null}
+              mayEdit={may.files}
+              whyReadOnly={may.filesWhy}
+              refused={activeDoc?.refused ?? false}
+              onrun={() => runFile(activePath)}
+            />
+          {/snippet}
+        </Lazy>
       {/if}
 
       <!--
@@ -3259,7 +3273,7 @@
      the presenter: for a student it would open nothing, and drawn it would
      lie. -->
 {#if isHost && !session.gone && session.banned === null}
-  <BanMenu />
+  <BanMenuLoader />
 {/if}
 
 <!--

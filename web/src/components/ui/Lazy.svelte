@@ -5,9 +5,11 @@
   import { loadLocalizedFeature } from '@/lib/screen-language'
   import { handleModuleFailure } from '@/lib/module-failures'
 
-  let { load, children }: {
+  let { load, children, loading }: {
     load: () => Promise<{ default: T }>
     children: Snippet<[T]>
+    /** Small controls reserve their own space instead of a whole content pane. */
+    loading?: Snippet
   } = $props()
   let attempt = $state(0)
   const pending = $derived.by(() => {
@@ -23,7 +25,11 @@
 </script>
 
 {#await pending}
-  <Splash size="pane" />
+  {#if loading}
+    {@render loading()}
+  {:else}
+    <Splash size="pane" />
+  {/if}
 {:then module}
   {@render children(module.default)}
 {:catch}

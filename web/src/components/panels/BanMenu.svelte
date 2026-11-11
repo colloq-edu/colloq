@@ -19,16 +19,23 @@
    * admitting that it is not there.
    */
   import { quintOut } from 'svelte/easing'
-  import { tick } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { fade, fly } from 'svelte/transition'
   import { api } from '@/lib/api'
-  import { BAN_MENU_EVENT, banConsequences, bansChanged, type BanTarget } from '@/lib/bans'
+  import { banConsequences, bansChanged, type BanTarget } from '@/lib/bans'
   import { getSessionState } from '@/lib/session.svelte'
   import { prefersReducedMotion } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
 
   const session = getSessionState()
+
+  let { request, onready, onclose }: {
+    request: { target: BanTarget; opener: HTMLElement | null }
+    onready: () => void
+    onclose: () => void
+  } = $props()
+  onMount(() => onready())
 
   let target = $state<BanTarget | null>(null)
   /** The menu item was pressed — the confirmation window is on screen. */
@@ -42,15 +49,11 @@
   let dialog = $state<HTMLElement | null>(null)
 
   $effect(() => {
-    const open = (event: Event) => {
-      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      target = (event as CustomEvent<BanTarget>).detail
-      asked = false
-      busy = false
-      errorRender = () => (null)
-    }
-    window.addEventListener(BAN_MENU_EVENT, open)
-    return () => window.removeEventListener(BAN_MENU_EVENT, open)
+    opener = request.opener
+    target = request.target
+    asked = false
+    busy = false
+    errorRender = () => (null)
   })
 
   // The opened layer gets the keyboard at once. In the confirmation the safe
@@ -91,6 +94,7 @@
     target = null
     asked = false
     opener = null
+    onclose()
     void tick().then(() => {
       if (back?.isConnected) back.focus()
     })

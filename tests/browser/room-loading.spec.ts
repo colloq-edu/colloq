@@ -36,6 +36,7 @@ for (const locale of ['ru', 'en'] as const) {
         file, gzip: gzipSync(fs.readFileSync(path.join('web/dist', file)), { level: 9 }).length,
       }))
       const gzipKiB = resources.reduce((sum, resource) => sum + resource.gzip, 0) / 1024
+      fs.mkdirSync('scratchpad', { recursive: true })
       fs.writeFileSync(`scratchpad/room-transfer-${locale}.json`, JSON.stringify({ locale, gzipKiB, resources }, null, 2) + '\n')
       await page.screenshot({ path: `scratchpad/room-final-${locale}.png` })
       await testInfo.attach('initial-room-transfer', { body: JSON.stringify({ locale, gzipKiB, resources }, null, 2), contentType: 'application/json' })
